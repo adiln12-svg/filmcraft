@@ -301,6 +301,13 @@ For any UI change, look at the result:
 Screenshots you commit must follow [AGENTS.md](../AGENTS.md) §1: FilmCraft only, openly licensed
 media, sidecar and `ATTRIBUTION.md` entry.
 
+## 3b. Editing without a person watching
+
+To take a brief and footage to a finished export on your own, use the perception and review
+commands in [autonomous-editing.md](autonomous-editing.md): `analyze.takes` (score takes),
+`script.align` (find each script line's best read), `analyze.beats` (tempo and beats),
+`qc.check` (judge the sequence against an edit spec) and `qc.filmstrip` (every cut in one image).
+
 # Part 2: developing FilmCraft
 
 ## 4. Orientation, in this order
