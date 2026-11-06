@@ -43,6 +43,89 @@ pub struct Take {
     pub pace: f32,
     /// The transcript text of the take.
     pub text: String,
+    /// Index of the take's first and last word in the source transcript.
+    pub word_first: usize,
+    pub word_last: usize,
+}
+
+/// How one script word lines up with what was transcribed (see [`word_ops`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Op {
+    /// Script word `.0` was heard as transcript word `.1` (exactly, or one edit away).
+    Match(usize, usize),
+    /// Script word `.0` sits where transcript word `.1` heard something else.
+    Sub(usize, usize),
+    /// Script word `.0` has no transcript word.
+    Del(usize),
+    /// Transcript word `.0` is not in the script.
+    Ins(usize),
+}
+
+/// The normalised, filler-free words of a script line, each with the index of the display word
+/// (`text.split_whitespace()`) it came from.
+pub fn script_words(text: &str) -> Vec<(usize, String)> {
+    text.split_whitespace().enumerate().map(|(i, w)| (i, norm(w))).filter(|(_, w)| !w.is_empty() && !is_filler(w)).take(MAX_LINE_WORDS).collect()
+}
+
+/// Word-by-word alignment of a line's script words with a stretch of transcript (`hyp`), with the
+/// edit operations in order. Fillers in `hyp` come out as insertions.
+pub fn word_ops(script: &[String], hyp: &[TWord]) -> Vec<Op> {
+    let hyp = hyp.get(..hyp.len().min(MAX_LINE_WORDS * 4)).unwrap_or(&[]);
+    let h: Vec<String> = hyp.iter().map(|w| norm(&w.text)).collect();
+    let (r, n) = (script.len(), h.len());
+    // cost: match 0, one-edit match 0.4, substitution 1, gap 1
+    let mut d = vec![vec![0f32; n + 1]; r + 1];
+    for (i, row) in d.iter_mut().enumerate() {
+        if let Some(c) = row.get_mut(0) {
+            *c = i as f32;
+        }
+    }
+    for j in 0..=n {
+        if let Some(c) = d.get_mut(0).and_then(|row| row.get_mut(j)) {
+            *c = j as f32;
+        }
+    }
+    let cost = |i: usize, j: usize| -> f32 {
+        let (a, b) = (script.get(i).map(String::as_str).unwrap_or(""), h.get(j).map(String::as_str).unwrap_or(""));
+        if is_filler(b) {
+            return 2.0; // never pair a filler with a script word
+        }
+        match sim(a, b) {
+            x if x >= 1.0 => 0.0,
+            x if x > 0.0 => 0.4,
+            _ => 1.0,
+        }
+    };
+    let at = |d: &Vec<Vec<f32>>, i: usize, j: usize| d.get(i).and_then(|row| row.get(j)).copied().unwrap_or(f32::INFINITY);
+    for i in 1..=r {
+        for j in 1..=n {
+            let v = (at(&d, i - 1, j - 1) + cost(i - 1, j - 1)).min(at(&d, i - 1, j) + 1.0).min(at(&d, i, j - 1) + 1.0);
+            if let Some(c) = d.get_mut(i).and_then(|row| row.get_mut(j)) {
+                *c = v;
+            }
+        }
+    }
+    let (mut i, mut j) = (r, n);
+    let mut ops = Vec::new();
+    while i > 0 || j > 0 {
+        if i > 0 && j > 0 && (at(&d, i, j) - (at(&d, i - 1, j - 1) + cost(i - 1, j - 1))).abs() < 1e-4 {
+            let c = cost(i - 1, j - 1);
+            ops.push(if c < 0.5 { Op::Match(i - 1, j - 1) } else { Op::Sub(i - 1, j - 1) });
+            i -= 1;
+            j -= 1;
+        } else if i > 0 && (at(&d, i, j) - (at(&d, i - 1, j) + 1.0)).abs() < 1e-4 {
+            ops.push(Op::Del(i - 1));
+            i -= 1;
+        } else if j > 0 {
+            ops.push(Op::Ins(j - 1));
+            j -= 1;
+        } else {
+            ops.push(Op::Del(i - 1));
+            i -= 1;
+        }
+    }
+    ops.reverse();
+    ops
 }
 
 /// Normalise a word: lower case, letters/digits/inner apostrophes only.
@@ -85,6 +168,11 @@ fn sim(a: &str, b: &str) -> f32 {
     }
     edits += (s.len() - i) + (l.len() - j);
     if edits <= 1 { 0.6 } else { 0.0 }
+}
+
+/// Whether two normalised words are the same or one edit apart (see `sim`).
+pub fn similar(a: &str, b: &str) -> bool {
+    sim(a, b) > 0.0
 }
 
 const MATCH: f32 = 2.0;
@@ -149,7 +237,9 @@ fn align_one(s: &[String], p: &Prepared<'_>, src: usize, min_score: f32) -> Vec<
     let mut prev: Vec<Cell> = (0..=n).map(|j| Cell { start: j, ..zero }).collect();
     let mut cur = vec![zero; n + 1];
     for (i, sw) in s.iter().enumerate() {
-        cur[0] = Cell { score: GAP * (i + 1) as f32, start: 0, exact: 0 };
+        if let Some(c0) = cur.get_mut(0) {
+            *c0 = Cell { score: GAP * (i + 1) as f32, start: 0, exact: 0 };
+        }
         for j in 1..=n {
             let tw = p.toks.get(j - 1).map(|t| t.0.as_str()).unwrap_or("");
             let m = sim(sw, tw);
@@ -168,7 +258,6 @@ fn align_one(s: &[String], p: &Prepared<'_>, src: usize, min_score: f32) -> Vec<
             }
         }
         std::mem::swap(&mut prev, &mut cur);
-        let _ = i;
     }
     // candidate ends: local maxima of the last row above the threshold; keep non-overlapping
     let mut cands: Vec<(usize, Cell)> = (1..=n).filter_map(|j| prev.get(j).map(|c| (j, *c))).filter(|(_, c)| c.score / max >= min_score).collect();
@@ -203,6 +292,8 @@ fn align_one(s: &[String], p: &Prepared<'_>, src: usize, min_score: f32) -> Vec<
             confidence: span.iter().map(|w| w.confidence.clamp(0.0, 1.0)).sum::<f32>() / span.len() as f32,
             pace: (spoken.len() as f64 / dur) as f32,
             text: span.iter().map(|w| w.text.as_str()).collect::<Vec<_>>().join(" "),
+            word_first: first.1,
+            word_last: last.1,
         });
     }
     out
@@ -245,6 +336,22 @@ mod tests {
         assert!(r[0].iter().any(|t| t.source == 0 && t.score > 0.5 && t.coverage < 1.0));
         assert_eq!(norm("Editors’,"), "editors");
         assert!(sim("editor", "editors") > 0.0 && sim("cat", "cats") == 0.0);
+    }
+
+    #[test]
+    fn word_ops_name_heard_misheard_missing_and_extra_words() {
+        let script: Vec<String> = script_words("The king has fled in disgrace, and your friends").into_iter().map(|x| x.1).collect();
+        let hyp = words("the king is flooded disgrace um and friends", 0.0);
+        let ops = word_ops(&script, &hyp);
+        let dels: Vec<usize> = ops.iter().filter_map(|o| if let Op::Del(i) = o { Some(*i) } else { None }).collect();
+        let subs = ops.iter().filter(|o| matches!(o, Op::Sub(..))).count();
+        let ins: Vec<usize> = ops.iter().filter_map(|o| if let Op::Ins(j) = o { Some(*j) } else { None }).collect();
+        assert!(ops.contains(&Op::Match(0, 0)) && ops.contains(&Op::Match(1, 1)));
+        assert!(subs >= 1, "{ops:?}");
+        assert!(dels.contains(&7), "\"your\" is missing: {ops:?}");
+        assert!(ins.contains(&5), "the filler is extra: {ops:?}");
+        assert!(word_ops(&[], &[]).is_empty());
+        assert_eq!(word_ops(&script, &[]).len(), script.len());
     }
 
     #[test]

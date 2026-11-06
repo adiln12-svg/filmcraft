@@ -113,6 +113,26 @@ fn vtt_overrides(settings: &str) -> (Option<f32>, Option<CaptionAlign>) {
 }
 
 /// Lay out and rasterise one caption for a `w`×`h` frame.
+/// The lines a caption is drawn as in a `w`×`h` frame: its own line breaks plus the word wrap
+/// [`render_caption`] applies (the caption face at the track's size, 90% of the frame width).
+/// Lets callers check how many lines a caption will really take before burning it in.
+pub fn layout_lines(c: &Caption, style: &CaptionStyle, w: usize, h: usize) -> Vec<String> {
+    if w == 0 || h == 0 {
+        return Vec::new();
+    }
+    let px = (style.size.clamp(4.0, MAX_CAPTION_SIZE_1080) * (h as f32 / 1080.0)).clamp(4.0, h as f32);
+    let ts = caption_style(&style.font, &style.font_style, px);
+    let mut lines: Vec<String> = c.plain_lines().iter().flat_map(|l| wrap(l.trim(), &ts, w as f32 * 0.9)).collect();
+    lines.retain(|l| !l.is_empty());
+    lines
+}
+
+/// Height of one caption line in pixels in a frame `h` pixels tall.
+pub fn line_height(style: &CaptionStyle, h: usize) -> f32 {
+    let px = (style.size.clamp(4.0, MAX_CAPTION_SIZE_1080) * (h as f32 / 1080.0)).clamp(4.0, (h as f32).max(4.0));
+    px * style.line_spacing.clamp(0.8, 4.0)
+}
+
 pub fn render_caption(c: &Caption, style: &CaptionStyle, w: usize, h: usize) -> Option<Overlay> {
     if w == 0 || h == 0 {
         return None;
@@ -324,6 +344,17 @@ mod tests {
             // composite clips it
             assert!(o.y >= 0 && o.y as usize + o.h <= 1922, "margin {margin}: y {} h {}", o.y, o.h);
         }
+    }
+
+    #[test]
+    fn layout_lines_match_the_burned_caption() {
+        let style = CaptionStyle { size: 60.0, ..Default::default() };
+        let c = cap("a fairly long caption that will not fit on one line of a narrow vertical frame");
+        let lines = layout_lines(&c, &style, 540, 960);
+        assert!(lines.len() >= 2, "{lines:?}");
+        assert_eq!(lines.join(" "), c.text);
+        assert_eq!(layout_lines(&c, &style, 0, 960), Vec::<String>::new());
+        assert!(line_height(&style, 1920) > line_height(&style, 1080));
     }
 
     #[test]

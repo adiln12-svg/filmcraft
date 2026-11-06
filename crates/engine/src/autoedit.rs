@@ -15,8 +15,13 @@
 //! on long media. They are agent commands (no menu).
 
 pub mod align;
+pub mod assemble;
 pub mod beats;
+pub mod capscript;
 pub mod qc;
+pub mod render;
+pub mod script;
+pub mod takecheck;
 pub mod takes;
 
 use filmcraft_media::FrameRequest;
@@ -65,9 +70,59 @@ pub(crate) fn commands() -> Vec<CommandSpec> {
             label: "Align Script to Transcripts",
             menu: &[],
             shortcut: None,
-            params: r#"{"script":str (one line per sentence or beat),"items":[id]? (default every transcribed item),"top":n=3,"minScore":0..1=0.5}"#,
+            params: r#"{"script":str (ARCA format or plain lines),"items":[id]? (default every transcribed item),"top":n=3,"minScore":0..1=0.5,"padIn":s=0.08,"padOut":s=0.12,"maxPause":s=0.6}"#,
             enabled: always,
             run: script_align,
+            journal: false,
+        },
+        CommandSpec {
+            id: "script.parse",
+            label: "Parse Approved Script",
+            menu: &[],
+            shortcut: None,
+            params: r#"{"script":str (ARCA format or plain lines)}"#,
+            enabled: always,
+            run: script_parse,
+            journal: false,
+        },
+        CommandSpec {
+            id: "script.assemble",
+            label: "Assemble Script",
+            menu: &[],
+            shortcut: None,
+            params: r#"{"script":str (the approved script, as written),"items":[id]? (transcribed takes; default all),"safeArea":"reels"|"tiktok"|"none"|{…}? (captions wrap inside it),"sequence":{"name","width","height","fps"}? (create one; else the active sequence),"videoTrack":"V1","audioTrack":"A1","start":seconds=0,"minScore":0..1=0.5,"padIn":s=0.08,"padOut":s=0.12,"maxPause":s=0.6,"captions":bool=true,"captionStyle":{…}?,"captionLines":n=2,"maxCps":f=20,"minCaptionSeconds":f=0.8}"#,
+            enabled: always,
+            run: assemble::assemble,
+            journal: true,
+        },
+        CommandSpec {
+            id: "qc.render",
+            label: "Check Exported File",
+            menu: &[],
+            shortcut: None,
+            params: r#"{"path":str (the exported file),"script":str? (approved script: caption text and spoken-line checks),"spec":{"width","height","fps","duration":{"min","max"},"loudness":{"integratedLufs":-14,"tolerance":1,"truePeakMax":-1},"safeArea":"reels"|"tiktok"|"none"|{"top","bottom","left","right"},"captions":{"maxLines":2,"maxCps":20,"minSeconds":0.8}}?,"samples":n=6,"minPsnr":dB=30,"transcribe":bool=true,"model":str?,"minLineScore":0..1=0.6}"#,
+            enabled: has_seq,
+            run: render::render_qc,
+            journal: false,
+        },
+        CommandSpec {
+            id: "autoedit.note",
+            label: "Log Editing Decision",
+            menu: &[],
+            shortcut: None,
+            params: r#"{"kind":"correction"|"decision"|"note","detail":any}"#,
+            enabled: always,
+            run: autoedit_note,
+            journal: false,
+        },
+        CommandSpec {
+            id: "autoedit.report",
+            label: "Editing Report",
+            menu: &[],
+            shortcut: None,
+            params: r#"{"path":str? (also write the report there as JSON)}"#,
+            enabled: always,
+            run: autoedit_report,
             journal: false,
         },
         CommandSpec {
@@ -360,63 +415,109 @@ fn analyze_takes(s: &mut Session, p: &Value) -> Result<Value> {
 
 fn script_align(s: &mut Session, p: &Value) -> Result<Value> {
     let cmd = "script.align";
-    let script = str_p(p, "script").ok_or_else(|| bad(cmd, "need `script` (the lines to find)"))?;
-    let lines: Vec<String> = script.lines().map(str::trim).filter(|l| !l.is_empty()).map(String::from).take(2_000).collect();
+    let script = str_p(p, "script").ok_or_else(|| bad(cmd, "need `script` (the approved script, as written)"))?;
+    let (lines, skipped) = script::parse(script);
     if lines.is_empty() {
-        return Err(bad(cmd, "`script` has no lines"));
+        return Err(bad(cmd, "`script` has no dialogue lines"));
     }
     let wanted = ids_p(p, "items");
-    let sources: Vec<(ItemId, String, Vec<align::TWord>)> = s
-        .project
-        .transcripts
-        .iter()
-        .filter(|(id, _)| wanted.as_ref().is_none_or(|w| w.contains(&id.0)))
-        .map(|(id, t)| {
-            let name = s.project.item(*id).map(|i| i.name.clone()).unwrap_or_default();
-            let words = t
-                .words
-                .iter()
-                .map(|w| align::TWord { text: w.text.clone(), start: w.start.seconds(), end: w.end.seconds(), confidence: w.confidence })
-                .collect();
-            (*id, name, words)
-        })
-        .collect();
-    if sources.is_empty() {
+    let src = assemble::sources(s, wanted.as_deref());
+    if src.is_empty() {
         return Err(bad(cmd, "no transcripts to search: run transcript.generate (or transcript.set) on the footage first"));
     }
     let top = u64_p(p, "top").unwrap_or(3).clamp(1, 50) as usize;
-    let min = finite_p(p, "minScore").unwrap_or(0.5).clamp(0.0, 1.0) as f32;
-    let words: Vec<Vec<align::TWord>> = sources.iter().map(|x| x.2.clone()).collect();
-    let found = align::align(&lines, &words, top, min);
-    let r3 = |v: f64| (v * 1000.0).round() / 1000.0;
+    let opts = assemble::opts_from(p);
+    let judged = assemble::analyze(&lines, &src, &opts);
     let mut missing = Vec::new();
+    let mut unusable = Vec::new();
     let out: Vec<Value> = lines
         .iter()
-        .zip(&found)
-        .enumerate()
-        .map(|(k, (line, takes))| {
+        .zip(&judged)
+        .map(|(line, takes)| {
             if takes.is_empty() {
-                missing.push(k);
+                missing.push(line.n - 1);
+            } else if !takes.iter().any(|t| t.usable) {
+                unusable.push(line.n - 1);
             }
             json!({
-                "line": k,
-                "text": line,
-                "takes": takes.iter().map(|t| {
-                    let (id, name) = sources.get(t.source).map(|x| (x.0 .0, x.1.clone())).unwrap_or_default();
-                    json!({
-                        "item": id, "name": name,
-                        "start": r3(t.start), "end": r3(t.end),
-                        "startTicks": Tick::from_seconds_f64(t.start).0, "endTicks": Tick::from_seconds_f64(t.end).0,
-                        "score": r3(t.score as f64), "coverage": r3(t.coverage as f64),
-                        "fillers": t.fillers, "repeats": t.repeats,
-                        "confidence": r3(t.confidence as f64), "wordsPerSecond": r3(t.pace as f64),
-                        "text": t.text,
-                    })
-                }).collect::<Vec<_>>(),
+                "line": line.n - 1,
+                "number": line.n,
+                "beat": line.beat,
+                "target": line.target,
+                "text": line.text,
+                "takes": takes.iter().take(top).map(assemble::judged_json).collect::<Vec<_>>(),
+                "usableTakes": takes.iter().filter(|t| t.usable).count(),
             })
         })
         .collect();
-    Ok(json!({"lines": out, "missing": missing, "transcripts": sources.len()}))
+    Ok(json!({
+        "lines": out,
+        "missing": missing,
+        "noUsableTake": unusable,
+        "skipped": skipped.iter().map(|k| json!({"raw": k.raw, "reason": k.reason})).collect::<Vec<_>>(),
+        "transcripts": src.len(),
+    }))
+}
+
+fn script_parse(_s: &mut Session, p: &Value) -> Result<Value> {
+    let script = str_p(p, "script").ok_or_else(|| bad("script.parse", "need `script`"))?;
+    let (lines, skipped) = script::parse(script);
+    Ok(json!({
+        "lines": lines.iter().map(|l| json!({"number": l.n, "beat": l.beat, "target": l.target, "text": l.text, "raw": l.raw})).collect::<Vec<_>>(),
+        "skipped": skipped.iter().map(|k| json!({"raw": k.raw, "reason": k.reason})).collect::<Vec<_>>(),
+    }))
+}
+
+fn autoedit_note(s: &mut Session, p: &Value) -> Result<Value> {
+    let kind = str_p(p, "kind").unwrap_or("note");
+    if !matches!(kind, "correction" | "decision" | "note") {
+        return Err(bad("autoedit.note", "`kind` is correction, decision or note"));
+    }
+    Ok(assemble::log(s, "agent", kind, p.get("detail").cloned().unwrap_or(Value::Null)))
+}
+
+/// The final state from the log: `BLOCKED` when the last assembly was blocked; else the state of
+/// the last check of an exported file (`COMPLETE` / `FAILED`); `FAILED` when no exported file was
+/// checked after the last assembly (a result that was not verified is not complete).
+fn autoedit_report(s: &mut Session, p: &Value) -> Result<Value> {
+    let log = &s.autoedit_log;
+    let last_assembly = log.iter().rposition(|e| e["stage"] == "assemble" && (e["event"] == "ASSEMBLED" || e["event"] == "BLOCKED"));
+    let last_qc = log.iter().rposition(|e| e["stage"] == "render-qc");
+    let (state, reason) = match (last_assembly.and_then(|i| log.get(i)), last_qc) {
+        (Some(a), _) if a["event"] == "BLOCKED" => ("BLOCKED", a["detail"].clone()),
+        (_, Some(q)) if last_assembly.is_none_or(|a| q > a) => {
+            let e = log.get(q).cloned().unwrap_or(Value::Null);
+            let st = if e["event"] == "COMPLETE" { "COMPLETE" } else { "FAILED" };
+            (st, e["detail"].clone())
+        }
+        _ => ("FAILED", json!({"reason": "the exported file was not checked (qc.render) after the last assembly, so the result is unverified"})),
+    };
+    let pick = |stage: &str| log.iter().filter(|e| e["stage"] == stage).cloned().collect::<Vec<_>>();
+    let unresolved: Vec<Value> = log
+        .iter()
+        .filter(|e| e["stage"] == "takes" && e["event"] == "selected")
+        .flat_map(|e| {
+            e["detail"]["softFlags"].as_array().cloned().unwrap_or_default().into_iter().map(move |f| json!({"line": e["detail"]["line"], "flag": f}))
+        })
+        .collect();
+    let report = json!({
+        "state": state,
+        "reason": reason,
+        "selected": log.iter().filter(|e| e["stage"] == "takes" && e["event"] == "selected").map(|e| e["detail"].clone()).collect::<Vec<_>>(),
+        "rejected": log.iter().filter(|e| e["stage"] == "takes" && e["event"] == "rejected").map(|e| e["detail"].clone()).collect::<Vec<_>>(),
+        "blocked": log.iter().filter(|e| e["event"] == "BLOCKED").map(|e| e["detail"].clone()).collect::<Vec<_>>(),
+        "edits": pick("edit").into_iter().map(|e| e["detail"].clone()).collect::<Vec<_>>(),
+        "captions": pick("captions").into_iter().map(|e| e["detail"].clone()).collect::<Vec<_>>(),
+        "corrections": log.iter().filter(|e| e["stage"] == "agent").cloned().collect::<Vec<_>>(),
+        "qualityChecks": pick("render-qc").into_iter().map(|e| json!({"state": e["event"], "detail": e["detail"]})).collect::<Vec<_>>(),
+        "openSoftFlags": unresolved,
+        "log": log,
+    });
+    if let Some(path) = str_p(p, "path") {
+        let text = serde_json::to_string_pretty(&report).map_err(|e| EngineError::Other(e.to_string()))?;
+        s.services.write_file(path, text.as_bytes()).map_err(|e| EngineError::Other(format!("{path}: {e}")))?;
+    }
+    Ok(report)
 }
 
 // ---------------------------------------------------------------------------------------- QC

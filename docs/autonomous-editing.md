@@ -11,8 +11,42 @@ both. They live in `crates/engine/src/autoedit.rs` and have no menu entries; the
 | `analyze.takes` | watching every take | 0–100 score per take (focus, exposure, clipping, motion), flags such as `soft`, `clipped highlights`, `heavy motion`; per-sample detail on request |
 | `script.align` | scrubbing for each line | every spoken take of each script line across all transcripts, ranked: clean reads first, then fillers, stumbles and partial reads; lines never spoken in `missing` |
 | `analyze.beats` | tapping along to the music | tempo, beat and downbeat times, onsets; optional Beat / Downbeat markers on the item or sequence |
-| `qc.check` | a review screening | the sequence judged against an **edit spec**; `pass` is false while any error remains |
+| `qc.check` | a review screening | the *timeline* judged against an **edit spec**; `pass` is false while any error remains (use `qc.render` for the exported file) |
 | `qc.filmstrip` | looking at each cut | one PNG: per cut, the frame 0.5 s before, the last frame before, the first frame after and 0.5 s after |
+
+## Script-faithful dialogue assembly and rendered-output QC (Milestone 1)
+
+| Command | Does |
+|---|---|
+| `script.parse` | Reads an approved script as written: ARCA `- [0–3s Hook] "…"` beats (label and timing kept as metadata, re-hook notes dropped), plain or numbered lines. Headers and `Label: value` metadata are skipped and listed, never guessed into dialogue. |
+| `script.align` | Every take of every line, judged: word alignment (missing, misheard, extra words), the take's own audio (below) and its cut points. Takes come back usable-first with `flags`, `usable`, `cutIn` / `cutOut`. |
+| `script.assemble` | Picks the best usable take per line, cuts it in silence, places the lines in script order and captions them with the **script's** words timed to the dialogue. Any line without a usable take → `BLOCKED`, naming the lines, and nothing is placed. |
+| `qc.render` | Checks the **exported file**: it decodes, matches the frame size, rate and length; sampled frames match the edit (PSNR); every caption and title is in the file, inside the frame (titles by their full laid-out text, so a word pushed off the edge counts), inside the safe area; captions are at most N lines (renderer layout and measured pixels), readable (characters/s, time on screen, no overlaps) and identical to the script; loudness and true peak of the decoded sound; the file's audio is transcribed and every line must be spoken once, in order, without stumbles or unscripted speech. `COMPLETE` only when every hard check passes, else `FAILED`. |
+| `autoedit.note` | Logs an agent's correction or decision. |
+| `autoedit.report` | The decision log and the final state: `BLOCKED` (last assembly blocked), `COMPLETE` / `FAILED` (last check of an exported file), `FAILED` when nothing exported was checked after the last assembly. |
+
+**Take checks that do not trust the transcript.** Whisper tidies speech: a stumble or false start can
+disappear from the text while the word around it gets longer. On a 10 ms level envelope of the
+take's own audio FilmCraft flags *hidden speech* (a word holding far more voiced time than it
+needs), *repeated audio* (the same 0.3 s of sound again within 1.5 s), pauses over `maxPause`,
+noise and clipped samples, and finds cut points in the silence around the voiced speech (a hard
+`clipped_*` flag when there is less than 30 ms of silence). Misheard words inside an otherwise
+matching read are *resolved* (logged; captions keep the script text); words missing at an edge where
+the audio shows speech are recogniser misses (timing interpolated); missing words with no speech, two
+or more added words, repeats and unverifiable noise are hard.
+
+**Hard vs soft.** Hard flags make a take unusable (`incomplete`, `missing_words`, `extra_words`,
+`repeated_words`, `hidden_speech`, `repeated_audio`, `clipped_in` / `clipped_out`, `too_noisy`,
+`unresolved`, `low_score`, `no_audio`); soft flags only lower its rank (`pause`, `noisy`, `fillers`,
+`asr_mismatch`, `unrecognised_edge_words`, `longer_than_other_takes`, `distorted`). In `qc.render`
+every check is hard except caption time on screen.
+
+**Measured limits (whisper-base, LibriSpeech read speech).** On 69 clean, correct reads, 2 were
+rejected (2.9 %, both multi-word proper names the recogniser mangled) and 4 short lines were not
+found; rejections fail safe (the line blocks, nothing wrong is placed). Takes made from one
+performance with edits (stumbles, cut lines, pauses, noise) were judged correctly; choosing between
+genuinely different performances is untested. Noisy takes (under 15 dB) are flagged soft; in them
+cut points are less reliable.
 
 Existing commands they work with: `transcript.generate` (speech to text, word timings),
 `transcript.createCaptions`, `clip.sceneEditDetection`, `scopes.read` (colour as numbers),
