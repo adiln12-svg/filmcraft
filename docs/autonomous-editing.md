@@ -85,7 +85,10 @@ filmcraft-cli exec qc.filmstrip '{"path": "/tmp/cuts.png", "limit": 20}'
 - `analyze.takes` compares takes with each other (sharpness is relative to the sharpest sample
   of the call), so analyse the takes of one scene together.
 - `analyze.beats` assumes one steady tempo per call; analyse sections separately for music that
-  changes tempo.
+  changes tempo. When it finds no steady beat (speech, ambience, free-time music: `confidence`,
+  the share of onsets on the beat grid above chance, under 0.3) it returns `steadyBeat: false`
+  with no tempo or beats, only the onsets. Beats are
+  placed on the bass and kick when a grid half a beat away is as regular.
 - Every command runs synchronously with capped work (frames, samples, words): 2,000 frames for
   `analyze.takes`, 15 minutes of audio for `analyze.beats`, 1,200 program frames for black-frame
   sampling, 40 rows per filmstrip.

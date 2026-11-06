@@ -176,6 +176,7 @@ fn analyze_beats(s: &mut Session, p: &Value) -> Result<Value> {
     }
     Ok(json!({
         "bpm": b.bpm,
+        "steadyBeat": !b.beats.is_empty(),
         "confidence": (b.confidence as f64 * 1000.0).round() / 1000.0,
         "beats": beat_times,
         "downbeats": down_times,

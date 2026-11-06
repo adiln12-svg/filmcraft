@@ -285,11 +285,18 @@ fn check_loudness(c: &Ctx<'_>, out: &mut Vec<Issue>) {
 
 /// Clicks at hard audio cuts.
 fn check_clicks(c: &Ctx<'_>, out: &mut Vec<Issue>) {
-    let (m, spec, frame) = (c.m, c.spec, c.frame);
+    let (m, spec, fps, frame) = (c.m, c.spec, c.fps, c.frame);
     let click_default = json!({"thresholdDb": -30.0});
     if let Some(c) = section(spec, "audioClicks", &click_default) {
         let th = num(c, "thresholdDb").unwrap_or(-30.0);
+        // one report per edit point: the outgoing and incoming clips share it
+        let mut seen: Vec<(&str, i64)> = Vec::new();
         for e in m.audio_edges.iter().filter(|e| !e.faded && e.peak_db > th && e.time > frame / 2.0 && e.time < m.duration - frame / 2.0) {
+            let key = (e.track.as_str(), (e.time * fps).round() as i64);
+            if seen.contains(&key) {
+                continue;
+            }
+            seen.push(key);
             out.push(
                 Issue::new(
                     "audioClick",
@@ -420,6 +427,7 @@ mod tests {
             true_peak_db: Some(0.3),
             audio_edges: vec![
                 AudioEdge { track: "A1".into(), clip: 5, time: 4.0, peak_db: -6.0, faded: false },
+                AudioEdge { track: "A1".into(), clip: 7, time: 4.0, peak_db: -9.0, faded: false },
                 AudioEdge { track: "A1".into(), clip: 6, time: 5.0, peak_db: -6.0, faded: true },
             ],
             luma_samples: vec![(0.5, 0.4), (6.0, 0.01), (7.0, 0.01), (8.0, 0.5)],
@@ -438,7 +446,7 @@ mod tests {
         for want in ["flashFrame", "gap", "blackFrames", "loudness", "truePeak", "audioClick", "captions"] {
             assert!(c.contains(&want), "missing {want}: {issues:#?}");
         }
-        // the faded edge is fine; colour and beat checks are opt-in
+        // one report per edit point, the faded edge is fine; colour and beat checks are opt-in
         assert_eq!(issues.iter().filter(|i| i.check == "audioClick").count(), 1);
         assert!(!c.contains(&"colorContinuity") && !c.contains(&"beatSync"));
         assert_eq!(metrics["cuts"], 3);
