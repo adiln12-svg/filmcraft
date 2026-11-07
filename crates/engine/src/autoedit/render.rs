@@ -226,6 +226,9 @@ pub fn render_qc(s: &mut Session, p: &Value) -> Result<Value> {
     let cmd = "qc.render";
     let path = str_p(p, "path").ok_or_else(|| bad(cmd, "need `path`: the exported file to check"))?.to_string();
     let spec = p.get("spec").cloned().unwrap_or(json!({}));
+    // reading speed: preferred target (soft) and hard limit; a looser limit needs an approval
+    // record. Checked before anything else, so a refused relaxation is never mistaken for a result
+    let policy = super::readability::policy(spec.get("captions")).map_err(|e| bad(cmd, e))?;
     let mut checks: Vec<Check> = Vec::new();
     let q = s.active_sequence().ok_or_else(|| bad(cmd, "open the sequence that was exported"))?.clone();
     let rate = q.settings.frame_rate;
@@ -307,9 +310,10 @@ pub fn render_qc(s: &mut Session, p: &Value) -> Result<Value> {
     let (top, bottom, left, right) = safe_area(spec.get("safeArea"));
     let caps = spec.get("captions").cloned().unwrap_or(json!({}));
     let max_lines = caps.get("maxLines").and_then(Value::as_u64).unwrap_or(2) as usize;
-    let max_cps = caps.get("maxCps").and_then(Value::as_f64).unwrap_or(20.0);
+    let max_cps = policy.max_cps;
+    measures["readability"] = policy.json();
     let min_secs = caps.get("minSeconds").and_then(Value::as_f64).unwrap_or(0.8);
-    let (mut overlays, mut readable) = gather_overlays(s, &q, sw, sh, max_cps, min_secs);
+    let (mut overlays, mut readable) = gather_overlays(s, &q, sw, sh, (policy.target_cps, max_cps), min_secs);
     checks.append(&mut readable);
     overlays.truncate(MAX_OVERLAYS);
     let mut located = Vec::new();
@@ -420,7 +424,8 @@ pub fn render_qc(s: &mut Session, p: &Value) -> Result<Value> {
 
 /// The captions and graphic clips of the sequence to locate in the file, and the caption
 /// readability checks (reading speed, time on screen, overlaps).
-fn gather_overlays(s: &Session, q: &filmcraft_project::Sequence, sw: usize, sh: usize, max_cps: f64, min_secs: f64) -> (Vec<Overlay>, Vec<Check>) {
+fn gather_overlays(s: &Session, q: &filmcraft_project::Sequence, sw: usize, sh: usize, cps: (f64, f64), min_secs: f64) -> (Vec<Overlay>, Vec<Check>) {
+    let (target_cps, max_cps) = cps;
     let rate = q.settings.frame_rate;
     let mut checks = Vec::new();
     let mut overlays: Vec<Overlay> = Vec::new();
@@ -444,8 +449,16 @@ fn gather_overlays(s: &Session, q: &filmcraft_project::Sequence, sw: usize, sh: 
                     "captionReadingSpeed",
                     false,
                     true,
-                    format!("\"{}\" reads at {:.1} characters/s (max {max_cps})", c.text.replace('\n', " "), chars / secs),
-                    json!({"caption": c.id.0}),
+                    format!("\"{}\" reads at {:.1} characters/s (hard limit {max_cps})", c.text.replace('\n', " "), chars / secs),
+                    json!({"caption": c.id.0, "cps": (chars / secs * 10.0).round() / 10.0}),
+                ));
+            } else if chars / secs > target_cps {
+                checks.push(Check::new(
+                    "captionReadingTarget",
+                    false,
+                    false,
+                    format!("\"{}\" reads at {:.1} characters/s (preferred {target_cps}, within the {max_cps} limit)", c.text.replace('\n', " "), chars / secs),
+                    json!({"caption": c.id.0, "cps": (chars / secs * 10.0).round() / 10.0}),
                 ));
             }
             if secs < min_secs {

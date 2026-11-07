@@ -64,14 +64,29 @@ pub enum Op {
 /// The normalised, filler-free words of a script line, each with the index of the display word
 /// (`text.split_whitespace()`) it came from.
 pub fn script_words(text: &str) -> Vec<(usize, String)> {
-    text.split_whitespace().enumerate().map(|(i, w)| (i, norm(w))).filter(|(_, w)| !w.is_empty() && !is_filler(w)).take(MAX_LINE_WORDS).collect()
+    text.split_whitespace()
+        .enumerate()
+        .flat_map(|(i, w)| tokens(w).into_iter().map(move |t| (i, t)))
+        .filter(|(_, w)| !w.is_empty() && !is_filler(w))
+        .take(MAX_LINE_WORDS)
+        .collect()
 }
 
 /// Word-by-word alignment of a line's script words with a stretch of transcript (`hyp`), with the
 /// edit operations in order. Fillers in `hyp` come out as insertions.
 pub fn word_ops(script: &[String], hyp: &[TWord]) -> Vec<Op> {
     let hyp = hyp.get(..hyp.len().min(MAX_LINE_WORDS * 4)).unwrap_or(&[]);
-    let h: Vec<String> = hyp.iter().map(|w| norm(&w.text)).collect();
+    // spoken tokens, each with the transcript word it came from ("21" is two tokens of one word)
+    let ht: Vec<(String, usize)> = hyp
+        .iter()
+        .enumerate()
+        .flat_map(|(j, w)| {
+            let t = tokens(&w.text);
+            if t.is_empty() { vec![(String::new(), j)] } else { t.into_iter().map(|x| (x, j)).collect() }
+        })
+        .collect();
+    let word_of = |k: usize| ht.get(k).map(|x| x.1).unwrap_or(0);
+    let h: Vec<String> = ht.iter().map(|x| x.0.clone()).collect();
     let (r, n) = (script.len(), h.len());
     // cost: match 0, one-edit match 0.4, substitution 1, gap 1
     let mut d = vec![vec![0f32; n + 1]; r + 1];
@@ -125,13 +140,99 @@ pub fn word_ops(script: &[String], hyp: &[TWord]) -> Vec<Op> {
         }
     }
     ops.reverse();
-    ops
+    // token positions → transcript word positions; one insertion per extra word
+    let mut out: Vec<Op> = Vec::with_capacity(ops.len());
+    for op in ops {
+        let o = match op {
+            Op::Match(i, k) => Op::Match(i, word_of(k)),
+            Op::Sub(i, k) => Op::Sub(i, word_of(k)),
+            Op::Ins(k) => Op::Ins(word_of(k)),
+            d => d,
+        };
+        if matches!(o, Op::Ins(_)) && out.last() == Some(&o) {
+            continue;
+        }
+        out.push(o);
+    }
+    out
 }
 
 /// Normalise a word: lower case, letters/digits/inner apostrophes only.
 pub fn norm(w: &str) -> String {
     let s: String = w.chars().filter(|c| c.is_alphanumeric() || *c == '\'' || *c == '’').map(|c| if c == '’' { '\'' } else { c }).collect();
     s.trim_matches('\'').to_lowercase()
+}
+
+/// The words a written word stands for when spoken: normalised, with numbers written out
+/// ("11" → "eleven", "2026" → "two thousand twenty six"), so a script and a transcript that write
+/// numbers differently still line up. Empty for punctuation.
+pub fn tokens(w: &str) -> Vec<String> {
+    let n = norm(w);
+    if !n.is_empty()
+        && n.len() <= 6
+        && n.chars().all(|c| c.is_ascii_digit())
+        && let Ok(v) = n.parse::<u64>()
+    {
+        return number_words(v).split(' ').map(String::from).collect();
+    }
+    if n.is_empty() { Vec::new() } else { vec![n] }
+}
+
+/// 0..999_999 in words, without "and": `number_words(21)` = "twenty one".
+pub fn number_words(v: u64) -> String {
+    const ONES: [&str; 20] = [
+        "zero",
+        "one",
+        "two",
+        "three",
+        "four",
+        "five",
+        "six",
+        "seven",
+        "eight",
+        "nine",
+        "ten",
+        "eleven",
+        "twelve",
+        "thirteen",
+        "fourteen",
+        "fifteen",
+        "sixteen",
+        "seventeen",
+        "eighteen",
+        "nineteen",
+    ];
+    const TENS: [&str; 10] = ["", "", "twenty", "thirty", "forty", "fifty", "sixty", "seventy", "eighty", "ninety"];
+    fn below_thousand(v: u64) -> Vec<&'static str> {
+        let mut out = Vec::new();
+        if v >= 100 {
+            out.push(ONES.get((v / 100) as usize).copied().unwrap_or(""));
+            out.push("hundred");
+        }
+        let r = v % 100;
+        if r >= 20 {
+            out.push(TENS.get((r / 10) as usize).copied().unwrap_or(""));
+            if !r.is_multiple_of(10) {
+                out.push(ONES.get((r % 10) as usize).copied().unwrap_or(""));
+            }
+        } else if r > 0 || v == 0 {
+            out.push(ONES.get(r as usize).copied().unwrap_or(""));
+        }
+        out
+    }
+    let v = v.min(999_999);
+    let mut words = Vec::new();
+    if v >= 1000 {
+        words.extend(below_thousand(v / 1000));
+        words.push("thousand");
+        if !v.is_multiple_of(1000) {
+            words.extend(below_thousand(v % 1000));
+        }
+    } else {
+        words.extend(below_thousand(v));
+    }
+    words.retain(|w| !w.is_empty());
+    words.join(" ")
 }
 
 pub fn is_filler(w: &str) -> bool {
@@ -194,7 +295,7 @@ pub fn align(script_lines: &[String], transcripts: &[Vec<TWord>], top: usize, mi
     script_lines
         .iter()
         .map(|line| {
-            let s: Vec<String> = line.split_whitespace().map(norm).filter(|w| !w.is_empty() && !is_filler(w)).take(MAX_LINE_WORDS).collect();
+            let s: Vec<String> = line.split_whitespace().flat_map(tokens).filter(|w| !w.is_empty() && !is_filler(w)).take(MAX_LINE_WORDS).collect();
             if s.is_empty() {
                 return Vec::new();
             }
@@ -222,7 +323,8 @@ struct Prepared<'a> {
 
 fn prepare(t: &[TWord]) -> Prepared<'_> {
     let words = t.get(..t.len().min(MAX_WORDS)).unwrap_or(&[]);
-    let toks = words.iter().enumerate().map(|(i, w)| (norm(&w.text), i)).filter(|(w, _)| !w.is_empty() && !is_filler(w)).collect();
+    let toks =
+        words.iter().enumerate().flat_map(|(i, w)| tokens(&w.text).into_iter().map(move |t| (t, i))).filter(|(w, _)| !w.is_empty() && !is_filler(w)).collect();
     Prepared { words, toks }
 }
 
@@ -352,6 +454,23 @@ mod tests {
         assert!(ins.contains(&5), "the filler is extra: {ops:?}");
         assert!(word_ops(&[], &[]).is_empty());
         assert_eq!(word_ops(&script, &[]).len(), script.len());
+    }
+
+    #[test]
+    fn numbers_written_as_digits_match_numbers_in_words() {
+        assert_eq!(number_words(11), "eleven");
+        assert_eq!(number_words(2026), "two thousand twenty six");
+        assert_eq!(number_words(0), "zero");
+        assert_eq!(number_words(u64::MAX), "nine hundred ninety nine thousand nine hundred ninety nine");
+        assert_eq!(tokens("21,"), vec!["twenty", "one"]);
+        assert_eq!(tokens("o'clock"), vec!["o'clock"]);
+        let r = align(&["It's eleven o'clock.".into()], &[words("It's 11 o'clock.", 2.0)], 3, 0.5);
+        assert!(r[0].first().is_some_and(|t| t.score > 0.99), "{r:?}");
+        let script: Vec<String> = script_words("about 21 days").into_iter().map(|x| x.1).collect();
+        let ops = word_ops(&script, &words("about twenty one days", 0.0));
+        assert!(ops.iter().all(|o| matches!(o, Op::Match(..))), "{ops:?}");
+        let ops = word_ops(&script_words("twenty one").into_iter().map(|x| x.1).collect::<Vec<_>>(), &words("21", 0.0));
+        assert_eq!(ops, vec![Op::Match(0, 0), Op::Match(1, 0)]);
     }
 
     #[test]

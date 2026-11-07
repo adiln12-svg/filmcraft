@@ -41,12 +41,46 @@ or more added words, repeats and unverifiable noise are hard.
 `asr_mismatch`, `unrecognised_edge_words`, `longer_than_other_takes`, `distorted`). In `qc.render`
 every check is hard except caption time on screen.
 
-**Measured limits (whisper-base, LibriSpeech read speech).** On 69 clean, correct reads, 2 were
-rejected (2.9 %, both multi-word proper names the recogniser mangled) and 4 short lines were not
-found; rejections fail safe (the line blocks, nothing wrong is placed). Takes made from one
-performance with edits (stumbles, cut lines, pauses, noise) were judged correctly; choosing between
-genuinely different performances is untested. Noisy takes (under 15 dB) are flagged soft; in them
-cut points are less reliable.
+**Measured limits.** See *Validation on genuine speech* below. Rejections fail safe (the line
+blocks, nothing wrong is placed). Noisy takes (under 15 dB) are flagged soft; in them cut points are
+less reliable.
+
+## Caption reading speed
+
+One policy for `script.assemble`, `qc.render` and `qc.check`:
+
+| | Default | Effect |
+|---|---|---|
+| Preferred target `targetCps` | 15 characters/s | Faster captions are logged as soft warnings (`captionReadingTarget`); never blocks |
+| Hard limit `maxCps` | 17 characters/s | Faster captions fail `qc.render`; an assembly that cannot meet it is `BLOCKED` |
+
+The hard limit can be made stricter freely. A looser one is a change to an approved requirement:
+it needs `maxCpsApproval: {"by": …, "reference": …}`, which is logged; without it the command is
+refused. FilmCraft never relaxes it on its own.
+
+Captions keep the script's words and stay in sync: a caption may appear up to `leadIn` (0.2 s)
+before its first word, never over the previous line's speech, and stays until the next caption
+(the last one of a line holds up to 0.7 s into the silence after it). Within that, each line is
+split where its fastest cue is slowest. For every line `script.assemble` reports the **lower bound**
+(`chars / seconds the line may be on screen`) and the reading speed achieved: no split or timing
+can beat the bound, so a bound above the limit proves the delivery is too fast to caption within
+it. Then the assembly is `BLOCKED` before anything is placed, naming the lines and the upstream
+decisions that can resolve it (caption treatment, a slower take or shorter line, an approved looser
+limit, or no burned-in captions). `onInfeasible: "continue"` assembles anyway for review; the
+exported file still fails `qc.render`. Among usable takes, those that can be captioned within the
+limit are preferred.
+
+## Validation on genuine speech (whisper-base)
+
+| Data | Result |
+|---|---|
+| CREMA-D: 120 independent takes (3 actors × 5 sentences × 6 emotions; numbers as digits in the transcript) | 119 found, 111 usable, 8 rejected (cut points, 2 incomplete); every line had a usable take. 4 usable takes lose 0.02–0.48 s of a quiet word ending |
+| DisfluencySpeech: 122 genuine restarts | 73 % rejected (repeated audio, extra / repeated words, hidden speech); missed restarts are mostly one-word repeats the recogniser removes |
+| DisfluencySpeech: 15 clean utterances | 2 rejected (13 %) |
+| LibriSpeech: 69 clean, correct reads | 3 rejected (4 %) |
+
+Choosing between equally clean performances (the emotional reading that fits the concept) is not
+judged: FilmCraft picks a clean, complete, well-aligned take.
 
 Existing commands they work with: `transcript.generate` (speech to text, word timings),
 `transcript.createCaptions`, `clip.sceneEditDetection`, `scopes.read` (colour as numbers),

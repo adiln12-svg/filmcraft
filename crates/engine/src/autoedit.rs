@@ -19,6 +19,7 @@ pub mod assemble;
 pub mod beats;
 pub mod capscript;
 pub mod qc;
+pub mod readability;
 pub mod render;
 pub mod script;
 pub mod takecheck;
@@ -90,7 +91,7 @@ pub(crate) fn commands() -> Vec<CommandSpec> {
             label: "Assemble Script",
             menu: &[],
             shortcut: None,
-            params: r#"{"script":str (the approved script, as written),"items":[id]? (transcribed takes; default all),"safeArea":"reels"|"tiktok"|"none"|{…}? (captions wrap inside it),"sequence":{"name","width","height","fps"}? (create one; else the active sequence),"videoTrack":"V1","audioTrack":"A1","start":seconds=0,"minScore":0..1=0.5,"padIn":s=0.08,"padOut":s=0.12,"maxPause":s=0.6,"captions":bool=true,"captionStyle":{…}?,"captionLines":n=2,"maxCps":f=20,"minCaptionSeconds":f=0.8}"#,
+            params: r#"{"script":str (the approved script, as written),"items":[id]? (transcribed takes; default all),"safeArea":"reels"|"tiktok"|"none"|{…}? (captions wrap inside it),"sequence":{"name","width","height","fps"}? (create one; else the active sequence),"videoTrack":"V1","audioTrack":"A1","start":seconds=0,"minScore":0..1=0.5,"padIn":s=0.08,"padOut":s=0.12,"maxPause":s=0.6,"captions":bool=true,"captionStyle":{…}?,"captionLines":n=2,"readability":{"targetCps":15,"maxCps":17,"maxCpsApproval":{"by","reference"}? (required above 17),"leadIn":s=0.2}?,"onInfeasible":"block"|"continue"="block","minCaptionSeconds":f=0.8}"#,
             enabled: always,
             run: assemble::assemble,
             journal: true,
@@ -100,7 +101,7 @@ pub(crate) fn commands() -> Vec<CommandSpec> {
             label: "Check Exported File",
             menu: &[],
             shortcut: None,
-            params: r#"{"path":str (the exported file),"script":str? (approved script: caption text and spoken-line checks),"spec":{"width","height","fps","duration":{"min","max"},"loudness":{"integratedLufs":-14,"tolerance":1,"truePeakMax":-1},"safeArea":"reels"|"tiktok"|"none"|{"top","bottom","left","right"},"captions":{"maxLines":2,"maxCps":20,"minSeconds":0.8}}?,"samples":n=6,"minPsnr":dB=30,"transcribe":bool=true,"model":str?,"minLineScore":0..1=0.6}"#,
+            params: r#"{"path":str (the exported file),"script":str? (approved script: caption text and spoken-line checks),"spec":{"width","height","fps","duration":{"min","max"},"loudness":{"integratedLufs":-14,"tolerance":1,"truePeakMax":-1},"safeArea":"reels"|"tiktok"|"none"|{"top","bottom","left","right"},"captions":{"maxLines":2,"targetCps":15,"maxCps":17,"maxCpsApproval":{"by","reference"}? (required above 17),"minSeconds":0.8}}?,"samples":n=6,"minPsnr":dB=30,"transcribe":bool=true,"model":str?,"minLineScore":0..1=0.6}"#,
             enabled: has_seq,
             run: render::render_qc,
             journal: false,
@@ -644,6 +645,10 @@ fn qc_check(s: &mut Session, p: &Value) -> Result<Value> {
         Some(v) if v.is_object() => v.clone(),
         Some(_) => return Err(bad("qc.check", "`spec` must be an object")),
     };
+    // the same reading-speed rule as qc.render: a looser limit needs an approval record
+    if let Some(c) = spec.get("captions").filter(|v| v.is_object()) {
+        readability::policy(Some(c)).map_err(|e| bad("qc.check", e))?;
+    }
     let every = finite_p(p, "sampleEvery").unwrap_or(1.0).clamp(0.04, 600.0);
     let m = measure_sequence(s, &spec, every)?;
     let (issues, metrics) = qc::check(&m, &spec);

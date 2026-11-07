@@ -224,3 +224,21 @@ fn qc_render_checks_the_exported_file() {
     );
     std::fs::remove_dir_all(dir).ok();
 }
+
+#[test]
+fn a_looser_reading_speed_limit_needs_an_approval_record() {
+    let mut s = demo();
+    let e = s.execute("script.assemble", json!({"script": ARCA, "maxCps": 20})).unwrap_err().to_string();
+    assert!(e.contains("maxCpsApproval"), "{e}");
+    let e = s.execute("qc.render", json!({"path": "/nonexistent.mp4", "spec": {"captions": {"maxCps": 25}}})).unwrap_err().to_string();
+    assert!(e.contains("maxCpsApproval"), "{e}");
+    let e = s.execute("qc.check", json!({"spec": {"captions": {"maxCps": 25}}})).unwrap_err().to_string();
+    assert!(e.contains("maxCpsApproval"), "{e}");
+    // stricter is always allowed; looser with a record is accepted and logged
+    s.execute("script.assemble", json!({"script": ARCA, "maxCps": 12})).unwrap();
+    let r = s
+        .execute("script.assemble", json!({"script": ARCA, "readability": {"maxCps": 20, "maxCpsApproval": {"by": "test", "reference": "unit test"}}}))
+        .unwrap();
+    assert_eq!(r["state"], "BLOCKED", "no transcripts: {r}");
+    assert!(s.autoedit_log.iter().any(|e| e["event"] == "policy" && e["detail"]["approval"]["by"] == "test"));
+}

@@ -404,6 +404,20 @@ pub fn assemble(s: &mut Session, p: &Value) -> Result<Value> {
     let cmd = "script.assemble";
     let script = str_p(p, "script").ok_or_else(|| bad(cmd, "need `script`: the approved script, as written"))?;
     let (lines, skipped) = super::script::parse(script);
+    // reading-speed policy: `readability` object, or the same keys at the top level
+    let mut rp = p.get("readability").filter(|v| v.is_object()).cloned().unwrap_or(json!({}));
+    for k in ["maxCps", "targetCps", "maxCpsApproval", "leadIn"] {
+        if rp.get(k).is_none()
+            && let Some(v) = p.get(k)
+        {
+            rp[k] = v.clone();
+        }
+    }
+    let captions_on = bool_p(p, "captions").unwrap_or(true);
+    let policy = super::readability::policy(Some(&rp)).map_err(|e| bad(cmd, e))?;
+    if captions_on {
+        log(s, "captions", "policy", policy.json());
+    }
     log(
         s,
         "script",
@@ -422,7 +436,16 @@ pub fn assemble(s: &mut Session, p: &Value) -> Result<Value> {
         return Ok(json!({"state": "BLOCKED", "blocked": [e["detail"].clone()]}));
     }
     let opts = opts_from(p);
-    let judged = analyze(&lines, &src, &opts);
+    let mut judged = analyze(&lines, &src, &opts);
+    // among usable takes, prefer those that can be captioned within the hard limit
+    if captions_on {
+        let hold = (opts.pad_in + opts.pad_out).min(0.7);
+        for (line, takes) in lines.iter().zip(judged.iter_mut()) {
+            let chars = line.text.chars().count() as f64;
+            let feasible = |t: &Judged| chars / ((t.take.end - t.take.start) + policy.lead_in + hold).max(0.05) <= policy.max_cps;
+            takes.sort_by(|a, b| b.usable.cmp(&a.usable).then(feasible(b).cmp(&feasible(a))).then(b.rank.total_cmp(&a.rank)));
+        }
+    }
     // decide every line before touching the timeline
     let mut picks = Vec::new();
     let mut blocked = Vec::new();
@@ -476,6 +499,50 @@ pub fn assemble(s: &mut Session, p: &Value) -> Result<Value> {
         );
         return Ok(json!({"state": "BLOCKED", "blocked": blocked, "summary": e["detail"]}));
     }
+    // can the captions be read within the hard limit? Planned on the cut as it will be placed,
+    // before anything is placed
+    if captions_on {
+        let size = match p.get("sequence").filter(|v| v.is_object()) {
+            Some(spec) => {
+                (spec.get("width").and_then(Value::as_u64).unwrap_or(1920) as usize, spec.get("height").and_then(Value::as_u64).unwrap_or(1080) as usize)
+            }
+            None => s.active_sequence().map(|q| (q.settings.width as usize, q.settings.height as usize)).unwrap_or((1920, 1080)),
+        };
+        let cfg = caption_cfg(p, size.0.clamp(16, 16_384), size.1.clamp(16, 16_384), &policy);
+        let mut t0 = finite(p, "start").unwrap_or(0.0).max(0.0);
+        let virt: Vec<(&ScriptLine, &Judged, f64, f64, f64)> = picks
+            .iter()
+            .map(|(l, t)| {
+                let d = (t.cut_out - t.cut_in).max(0.04);
+                let v = (l, t, t0, t.cut_in, t0 + d);
+                t0 += d;
+                v
+            })
+            .collect();
+        let lw = line_words(s, &virt);
+        let plan = super::capscript::plan(&lw, &cfg.timing, &|ws: &[String]| fit(&cfg, ws));
+        let reading: Vec<Value> = plan.lines.iter().map(reading_json).collect();
+        let over: Vec<Value> = plan.lines.iter().filter(|r| r.worst_cps > policy.max_cps + 1e-6).map(reading_json).collect();
+        let above_target: Vec<Value> =
+            plan.lines.iter().filter(|r| r.worst_cps > policy.target_cps + 1e-6 && r.worst_cps <= policy.max_cps + 1e-6).map(reading_json).collect();
+        log(s, "captions", "readability", json!({"policy": policy.json(), "lines": reading, "aboveTarget": above_target, "overLimit": over}));
+        if !over.is_empty() {
+            let detail = json!({
+                "kind": "caption_reading_speed",
+                "lines": over.iter().map(|r| r["line"].clone()).collect::<Vec<_>>(),
+                "reason": format!("the approved script cannot be captioned within the {} characters/s limit from the chosen takes: the delivery is faster than the captions can be read while staying in sync", policy.max_cps),
+                "readingSpeed": over,
+                "policy": policy.json(),
+                "upstreamDecision": super::readability::upstream_options(&policy),
+            });
+            if str_p(p, "onInfeasible").unwrap_or("block") != "continue" {
+                let e = log(s, "assemble", "BLOCKED", detail.clone());
+                return Ok(json!({"state": "BLOCKED", "blocked": [e["detail"].clone()], "summary": e["detail"]["reason"]}));
+            }
+            // assemble anyway for review; the exported file cannot pass qc.render
+            log(s, "captions", "over_limit_continue", detail);
+        }
+    }
     // the sequence: a new one, or the active one
     if let Some(spec) = p.get("sequence").filter(|v| v.is_object()) {
         let r = s.execute("file.newSequence", spec.clone())?;
@@ -511,8 +578,8 @@ pub fn assemble(s: &mut Session, p: &Value) -> Result<Value> {
     }
     // captions from the script
     let mut caption_out = Value::Null;
-    if bool_p(p, "captions").unwrap_or(true) {
-        caption_out = script_captions(s, seq_id, &placed, p)?;
+    if captions_on {
+        caption_out = script_captions(s, &placed, p, &policy)?;
     }
     let total = t;
     let e = log(s, "assemble", "ASSEMBLED", json!({"lines": placed.len(), "seconds": total}));
@@ -529,24 +596,23 @@ pub fn assemble(s: &mut Session, p: &Value) -> Result<Value> {
 
 type Placed = (ScriptLine, Judged, f64, f64, f64, Vec<u64>);
 
-/// Captions whose text is the script, timed by the aligned words of the placed takes.
-fn script_captions(s: &mut Session, seq_id: ItemId, placed: &[Placed], p: &Value) -> Result<Value> {
-    let q = s.active_sequence().ok_or(EngineError::NoSequence)?;
-    let (w, h) = (q.settings.width as usize, q.settings.height as usize);
-    let vertical = h > w;
-    let mut style_v = default_caption_style(vertical);
+/// Everything that decides how script captions are cut and drawn.
+struct CapCfg {
+    style_v: Value,
+    style: filmcraft_project::CaptionStyle,
+    h: usize,
+    wrap_w: usize,
+    max_lines: usize,
+    timing: super::capscript::Timing,
+}
+
+fn caption_cfg(p: &Value, w: usize, h: usize, policy: &super::readability::Policy) -> CapCfg {
+    let mut style_v = default_caption_style(h > w);
     if let Some(o) = p.get("captionStyle").and_then(Value::as_object) {
         for (k, v) in o {
             style_v[k] = v.clone();
         }
     }
-    let max_lines = u64_p(p, "captionLines").unwrap_or(2).clamp(1, 3) as usize;
-    let timing = super::capscript::Timing {
-        max_cps: finite(p, "maxCps").unwrap_or(20.0).clamp(5.0, 60.0),
-        min_seconds: finite(p, "minCaptionSeconds").unwrap_or(0.8).clamp(0.1, 10.0),
-        ..Default::default()
-    };
-    // the style as the renderer will see it
     let mut style = filmcraft_project::CaptionStyle::default();
     if let Some(v) = style_v.get("size").and_then(Value::as_f64) {
         style.size = v as f32;
@@ -560,38 +626,52 @@ fn script_captions(s: &mut Session, seq_id: ItemId, placed: &[Placed], p: &Value
     let px = style.size.clamp(4.0, 256.0) as f64 * h as f64 / 1080.0;
     let usable = (1.0 - sl - sr) * w as f64 - 2.0 * (0.34 * px + 2.0);
     let wrap_w = ((usable / 0.9).floor() as usize).clamp(1, w.max(1));
-    let lines_of = |text: &str| -> usize {
-        let c = filmcraft_project::Caption {
-            id: filmcraft_project::ClipId(0),
-            start: filmcraft_time::Tick::ZERO,
-            duration: filmcraft_time::Tick(1),
-            text: text.into(),
-            speaker: None,
-            cue_id: None,
-            settings: String::new(),
-        };
-        filmcraft_captions::burn::layout_lines(&c, &style, wrap_w, h).len()
+    let timing = super::capscript::Timing {
+        max_cps: policy.max_cps,
+        lead_in: policy.lead_in,
+        min_seconds: finite(p, "minCaptionSeconds").unwrap_or(0.8).clamp(0.1, 10.0),
+        ..Default::default()
     };
-    let fit = |ws: &[String]| -> Option<String> {
-        let t = ws.join(" ");
-        if lines_of(&t) == 1 {
-            return Some(t);
-        }
-        if max_lines < 2 {
-            return None;
-        }
-        // two balanced lines, each drawn as one line
-        (1..ws.len())
-            .filter_map(|k| {
-                let (a, b) = (ws.get(..k)?.join(" "), ws.get(k..)?.join(" "));
-                (lines_of(&a) == 1 && lines_of(&b) == 1).then(|| (a.chars().count().abs_diff(b.chars().count()), format!("{a}\n{b}")))
-            })
-            .min_by_key(|x| x.0)
-            .map(|x| x.1)
+    CapCfg { style_v, style, h, wrap_w, max_lines: u64_p(p, "captionLines").unwrap_or(2).clamp(1, 3) as usize, timing }
+}
+
+fn rendered_lines(cfg: &CapCfg, text: &str) -> usize {
+    let c = filmcraft_project::Caption {
+        id: filmcraft_project::ClipId(0),
+        start: filmcraft_time::Tick::ZERO,
+        duration: filmcraft_time::Tick(1),
+        text: text.into(),
+        speaker: None,
+        cue_id: None,
+        settings: String::new(),
     };
-    // word times in sequence seconds
+    filmcraft_captions::burn::layout_lines(&c, &cfg.style, cfg.wrap_w, cfg.h).len()
+}
+
+/// The cue text for `ws` with its line breaks when it renders within the allowed lines.
+fn fit(cfg: &CapCfg, ws: &[String]) -> Option<String> {
+    let t = ws.join(" ");
+    if rendered_lines(cfg, &t) == 1 {
+        return Some(t);
+    }
+    if cfg.max_lines < 2 {
+        return None;
+    }
+    // two balanced lines, each drawn as one line
+    (1..ws.len())
+        .filter_map(|k| {
+            let (a, b) = (ws.get(..k)?.join(" "), ws.get(k..)?.join(" "));
+            (rendered_lines(cfg, &a) == 1 && rendered_lines(cfg, &b) == 1).then(|| (a.chars().count().abs_diff(b.chars().count()), format!("{a}\n{b}")))
+        })
+        .min_by_key(|x| x.0)
+        .map(|x| x.1)
+}
+
+/// Each line's script words with the times of the transcript words they were aligned with, in
+/// sequence seconds for a take placed at `start` with media `source_in`.
+fn line_words(s: &Session, placed: &[(&ScriptLine, &Judged, f64, f64, f64)]) -> Vec<super::capscript::LineWords> {
     let mut lw = Vec::new();
-    for (line, take, start, source_in, end, _) in placed {
+    for (line, take, start, source_in, end) in placed {
         let src_words: Vec<TWord> = s
             .project
             .transcripts
@@ -613,9 +693,23 @@ fn script_captions(s: &mut Session, seq_id: ItemId, placed: &[Placed], p: &Value
         }
         lw.push(super::capscript::LineWords { line: line.n, words: display, times, window: (*start, *end) });
     }
-    let mut cues = super::capscript::cues(&lw, &timing, &fit);
-    // whole frames, never overlapping: captions.add floors the start and rounds the length
+    lw
+}
+
+fn reading_json(r: &super::capscript::LineReading) -> Value {
+    let r1 = |v: f64| (v * 10.0).round() / 10.0;
+    json!({"line": r.line, "chars": r.chars, "seconds": (r.seconds * 100.0).round() / 100.0, "lowerBoundCps": r1(r.bound_cps), "achievedCps": r1(r.worst_cps)})
+}
+
+/// Captions whose text is the script, timed by the aligned words of the placed takes.
+fn script_captions(s: &mut Session, placed: &[Placed], p: &Value, policy: &super::readability::Policy) -> Result<Value> {
+    let q = s.active_sequence().ok_or(EngineError::NoSequence)?;
+    let cfg = caption_cfg(p, q.settings.width as usize, q.settings.height as usize, policy);
     let rate = q.settings.frame_rate;
+    let lw = line_words(s, &placed.iter().map(|(l, t, a, b, c, _)| (l, t, *a, *b, *c)).collect::<Vec<_>>());
+    let plan = super::capscript::plan(&lw, &cfg.timing, &|ws: &[String]| fit(&cfg, ws));
+    let mut cues = plan.cues;
+    // whole frames, never overlapping: captions.add floors the start and rounds the length
     let fd = rate.frame_duration();
     let mut prev_end = filmcraft_time::Tick::ZERO;
     let mut frames: Vec<(filmcraft_time::Tick, filmcraft_time::Tick)> = Vec::new();
@@ -637,14 +731,16 @@ fn script_captions(s: &mut Session, seq_id: ItemId, placed: &[Placed], p: &Value
         s.execute("captions.add", json!({"track": track, "text": c.text, "time": a.0, "durationSeconds": (b - a).seconds()}))?;
         out.push(json!({"line": c.line, "start": c.start, "end": c.end, "text": c.text, "cps": (c.cps() * 10.0).round() / 10.0, "interpolatedWords": c.interpolated}));
     }
-    let mut style_cmd = style_v.clone();
+    let mut style_cmd = cfg.style_v.clone();
     style_cmd["track"] = track.clone();
     s.execute("captions.setStyle", style_cmd)?;
     let resolved: Vec<Value> =
         placed.iter().flat_map(|(l, t, ..)| t.resolved.iter().map(move |(a, b)| json!({"line": l.n, "script": a, "heard": b}))).collect();
+    let reading: Vec<Value> = plan.lines.iter().map(reading_json).collect();
     let detail = json!({"track": track, "cues": out.len(), "source": "approved script text", "resolvedMismatches": resolved,
-        "interpolatedWords": cues.iter().map(|c| c.interpolated).sum::<usize>(), "style": style_v});
+        "interpolatedWords": cues.iter().map(|c| c.interpolated).sum::<usize>(), "style": cfg.style_v, "readingSpeed": reading, "policy": policy.json()});
     log(s, "captions", "created", detail.clone());
-    let _ = seq_id;
-    Ok(json!({"track": track, "cues": out, "resolvedMismatches": detail["resolvedMismatches"]}))
+    Ok(
+        json!({"track": track, "cues": out, "resolvedMismatches": detail["resolvedMismatches"], "readingSpeed": detail["readingSpeed"], "policy": detail["policy"]}),
+    )
 }

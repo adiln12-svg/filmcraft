@@ -164,7 +164,8 @@ pub fn check(env: &Envelope<'_>, words: &[TWord], limits: &Limits) -> TakeAudio 
     if reliable {
         // hidden speech: a word carrying much more voiced time than it can account for
         for w in words {
-            let chars = super::align::norm(&w.text).chars().count() as f64;
+            // the spoken form: "11" is said as "eleven"
+            let chars = super::align::tokens(&w.text).join(" ").chars().count() as f64;
             let expected = 0.30 + 0.085 * chars;
             let voiced = active_seconds(env, &lv, w.start, w.end);
             if voiced > 1.5 * expected && voiced - expected > HIDDEN_EXCESS {
@@ -225,8 +226,12 @@ pub fn check(env: &Envelope<'_>, words: &[TWord], limits: &Limits) -> TakeAudio 
 /// Bands for the repetition check.
 const BANDS: usize = 16;
 /// Window compared (frames of 10 ms) and the lags searched.
-const WIN: usize = 30;
-const LAG_MIN: usize = WIN;
+/// Calibrated on genuine speech (DisfluencySpeech restarts against LibriSpeech, CREMA-D and
+/// DisfluencySpeech clean reads): 0.2 s windows, 0.15 s apart or more, similarity ≥ 0.95 caught
+/// 74% of restarts with about 1% false alarms on clean reads; shorter windows or a lower similarity
+/// caught more restarts but flagged 15–50% of clean reads.
+const WIN: usize = 20;
+const LAG_MIN: usize = 15;
 const LAG_MAX: usize = 150;
 /// Correlation above which two windows count as the same sounds.
 pub const REPEAT_SIMILARITY: f32 = 0.95;
@@ -267,7 +272,7 @@ fn bands(env: &Envelope<'_>, a: f64, b: f64) -> Vec<[f32; BANDS]> {
     out
 }
 
-/// The strongest repetition of a voiced 0.3 s stretch 0.3–1.5 s later (never overlapping itself), if it is above
+/// The strongest repetition of a voiced 0.2 s stretch 0.15–1.5 s later, if it is above
 /// [`REPEAT_SIMILARITY`]: (media seconds of the first occurrence, similarity).
 fn repetition(env: &Envelope<'_>, lv: &Levels, a: f64, b: f64) -> Option<(f64, f32)> {
     let feats = bands(env, a, b);
@@ -359,7 +364,22 @@ pub fn cut_points(env: &Envelope<'_>, lv: &Levels, words: &[TWord], pad_in: f64,
         }
         probe += 1;
     }
-    // silence available before the onset and after the offset
+    // hysteresis: speech edges fade below the detection threshold (a trailing "s", a drawn-out
+    // vowel); follow them outward while the level stays clearly above the noise floor
+    let low_db = lv.floor_db + (0.15 * lv.snr_db).clamp(6.0, (lv.threshold_db - lv.floor_db).max(6.0));
+    let audible = |f: usize| env.db.get(f).is_some_and(|d| *d > low_db);
+    let mut steps = 0;
+    while onset > inner_lo && audible(onset - 1) && steps < 50 {
+        onset -= 1;
+        steps += 1;
+    }
+    let mut steps = 0;
+    while offset < inner_hi && audible(offset) && steps < 50 {
+        offset += 1;
+        steps += 1;
+    }
+    // room before the onset and after the offset with no speech in it (judged at the detection
+    // threshold: a faint tail or room tone next to a cut does not clip a word)
     let quiet_before = (lo..onset).rev().take_while(|&f| !on(f)).count();
     let quiet_after = (offset..hi).take_while(|&f| !on(f)).count();
     let pad_in_f = ((pad_in / HOP).round() as usize).min(quiet_before.saturating_sub(1));
