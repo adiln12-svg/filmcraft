@@ -43,6 +43,8 @@ serde_json = { workspace = true }
 thiserror = { workspace = true }
 log = { workspace = true }
 chrono = { workspace = true }
+# SHA-256 of font-library files (MIT/Apache-2.0; already used by filmcraft-speech)
+sha2 = "0.10"
 craft-docpath = { workspace = true }
 web-time = "1"
 

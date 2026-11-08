@@ -21,6 +21,10 @@ unicode-bidi = "0.3.18"
 unicode-linebreak = "0.1.5"
 # UAX #29 extended grapheme clusters (MIT OR Apache-2.0).
 unicode-segmentation = "1.13"
+# WOFF / WOFF2 web-font decoding (MIT), pure Rust; brotli-decompressor (BSD-3-Clause/MIT) without its
+# opt-in `unsafe` feature, flate2 already in the workspace. Pinned to a release older than two weeks
+# at the time of review (0.2.10 was days old).
+wuff = "=0.2.9"
 
 [dev-dependencies]
 tempfile = "3.27"

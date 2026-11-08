@@ -445,6 +445,9 @@ pub struct UiState {
     pub markers_panel: crate::panels::markers_panel::State,
     #[serde(skip)]
     pub palette_manager: Option<crate::panels::palette_manager::Draft>,
+    /// Window ▸ Font Library.
+    #[serde(skip)]
+    pub font_library: crate::panels::font_library::State,
     #[serde(skip)]
     pub marker_properties: Option<crate::panels::marker_properties::Draft>,
     #[serde(skip)]
@@ -994,6 +997,7 @@ impl Default for UiState {
             marker_properties: None,
             markers_panel: Default::default(),
             palette_manager: None,
+            font_library: Default::default(),
             custom_label_color: None,
             language: crate::i18n::Language::default(),
             tool: Tool::Selection,

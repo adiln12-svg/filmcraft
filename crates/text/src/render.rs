@@ -13,7 +13,7 @@
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, OnceLock, PoisonError};
 
-use skrifa::instance::{LocationRef, Size};
+use skrifa::instance::Size;
 use skrifa::outline::{DrawSettings, OutlinePen};
 use skrifa::{GlyphId, MetadataProvider};
 
@@ -66,7 +66,7 @@ fn outline(face: FaceId, gid: u32) -> Option<Arc<Vec<Cmd>>> {
     let v = f.font().and_then(|font| {
         let g = font.outline_glyphs().get(GlyphId::new(gid))?;
         let mut rec = Rec(Vec::new());
-        g.draw(DrawSettings::unhinted(Size::unscaled(), LocationRef::default()), &mut rec).ok()?;
+        g.draw(DrawSettings::unhinted(Size::unscaled(), f.location()), &mut rec).ok()?;
         Some(Arc::new(rec.0))
     });
     let mut m = c.lock().unwrap_or_else(PoisonError::into_inner);

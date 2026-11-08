@@ -93,6 +93,10 @@ pub struct FaceInfo {
     pub data: FaceData,
     /// "bundled", "system", …
     pub origin: &'static str,
+    /// For a variable font, the named instance this face is ("Black" of Archivo): its axis
+    /// location is used for metrics, outlines and shaping. None for static fonts and for the
+    /// default instance of a variable font that has no named instances.
+    pub instance: Option<u16>,
 }
 
 /// Something that can list fonts (system folders, a web font picker, a project's font folder…).
@@ -216,7 +220,7 @@ impl FontSource for DirectorySource {
 }
 
 fn info_from(n: FaceNames, data: FaceData, origin: &'static str) -> FaceInfo {
-    FaceInfo { family: n.family, style: n.style, weight: n.weight, italic: n.italic, index: n.index, data, origin }
+    FaceInfo { family: n.family, style: n.style, weight: n.weight, italic: n.italic, index: n.index, data, origin, instance: None }
 }
 
 /// A loaded (or loadable) face.
@@ -225,6 +229,10 @@ pub struct Face {
     pub info: FaceInfo,
     bytes: OnceLock<Option<FaceBytes>>,
     shaper: OnceLock<harfrust::ShaperData>,
+    location: OnceLock<skrifa::instance::Location>,
+    shaper_instance: OnceLock<Option<harfrust::ShaperInstance>>,
+    /// Retired (its font was removed from the library): no longer resolved or listed.
+    retired: std::sync::atomic::AtomicBool,
 }
 
 #[derive(Clone)]
@@ -258,6 +266,39 @@ pub struct VMetrics {
 }
 
 impl Face {
+    fn new(id: FaceId, info: FaceInfo) -> Self {
+        Face {
+            id,
+            info,
+            bytes: OnceLock::new(),
+            shaper: OnceLock::new(),
+            location: OnceLock::new(),
+            shaper_instance: OnceLock::new(),
+            retired: Default::default(),
+        }
+    }
+    /// Whether the face was retired with [`retire_faces`].
+    pub fn is_retired(&self) -> bool {
+        self.retired.load(std::sync::atomic::Ordering::Relaxed)
+    }
+    /// Where in the font's design space this face sits: the named instance's axis location for
+    /// a variable-font instance, the default location otherwise.
+    pub fn location(&self) -> LocationRef<'_> {
+        let loc = self.location.get_or_init(|| match (self.info.instance, self.font()) {
+            (Some(i), Some(f)) => f.named_instances().get(i as usize).map(|n| n.location()).unwrap_or_else(|| skrifa::instance::Location::new(0)),
+            _ => skrifa::instance::Location::new(0),
+        });
+        LocationRef::from(loc)
+    }
+    /// The shaping instance of a variable-font instance (None: the default instance).
+    pub(crate) fn shaper_instance(&self) -> Option<&harfrust::ShaperInstance> {
+        self.shaper_instance
+            .get_or_init(|| match (self.info.instance, self.font()) {
+                (Some(i), Some(f)) => Some(harfrust::ShaperInstance::from_named_instance(&f, i as usize)),
+                _ => None,
+            })
+            .as_ref()
+    }
     fn bytes(&self) -> Option<&[u8]> {
         self.bytes
             .get_or_init(|| match &self.info.data {
@@ -281,7 +322,7 @@ impl Face {
         Some(self.shaper.get_or_init(|| harfrust::ShaperData::new(&f)))
     }
     pub fn units_per_em(&self) -> f32 {
-        self.font().map(|f| f.metrics(Size::unscaled(), LocationRef::default()).units_per_em as f32).filter(|u| *u > 0.0).unwrap_or(1000.0)
+        self.font().map(|f| f.metrics(Size::unscaled(), self.location()).units_per_em as f32).filter(|u| *u > 0.0).unwrap_or(1000.0)
     }
     /// Glyph for a character (None when the face does not cover it).
     pub fn glyph(&self, c: char) -> Option<u32> {
@@ -311,7 +352,7 @@ impl Face {
         let units = match font.vorg() {
             Ok(table) => f32::from(table.vertical_origin_y(glyph)),
             Err(_) => {
-                let bounds = font.glyph_metrics(Size::unscaled(), LocationRef::default()).bounds(glyph)?;
+                let bounds = font.glyph_metrics(Size::unscaled(), self.location()).bounds(glyph)?;
                 bounds.y_max + f32::from(font.vmtx().ok()?.side_bearing(glyph)?)
             }
         };
@@ -333,7 +374,7 @@ impl Face {
                 ..Default::default()
             };
         };
-        let m = f.metrics(Size::new(px), LocationRef::default());
+        let m = f.metrics(Size::new(px), self.location());
         let x_height = m.x_height.unwrap_or(m.ascent * 0.5);
         // OS/2 strikeout: offset of the stroke's top above the baseline. Fonts that leave it zero
         // (or put it below the baseline) get a stroke centred on half the x-height.
@@ -379,8 +420,9 @@ fn db() -> &'static RwLock<Db> {
             index: 0,
             data: FaceData::Static(INTER_REGULAR),
             origin: "bundled",
+            instance: None,
         };
-        let fallback = Arc::new(Face { id: 0, info, bytes: OnceLock::new(), shaper: OnceLock::new() });
+        let fallback = Arc::new(Face::new(0, info));
         let mut db = Db { faces: Vec::new(), fallback, scanned: false };
         for b in [INTER_REGULAR, INTER_MEDIUM, INTER_SEMIBOLD, INTER_BOLD, INTER_ITALIC, JETBRAINS_MONO_REGULAR, NOTO_SERIF_REGULAR] {
             for n in read_faces_bytes(b) {
@@ -391,7 +433,9 @@ fn db() -> &'static RwLock<Db> {
         // family + style is then skipped as a duplicate)
         for f in CRAFT_FONTS {
             for n in read_faces_bytes(f.bytes) {
-                push(&mut db, info_from(n, FaceData::Static(f.bytes), CRAFT_ORIGIN));
+                for i in expand_instances(info_from(n, FaceData::Static(f.bytes), CRAFT_ORIGIN), f.bytes) {
+                    push(&mut db, i);
+                }
             }
         }
         RwLock::new(db)
@@ -400,8 +444,21 @@ fn db() -> &'static RwLock<Db> {
 
 fn push(db: &mut Db, info: FaceInfo) -> FaceId {
     let id = db.faces.len();
-    db.faces.push(Arc::new(Face { id, info, bytes: OnceLock::new(), shaper: OnceLock::new() }));
+    db.faces.push(Arc::new(Face::new(id, info)));
+    bump_generation();
     id
+}
+
+static GENERATION: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+fn bump_generation() {
+    GENERATION.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// Changes whenever faces are added or retired: caches of resolved fonts (layouts) key on it, so
+/// text laid out while a font was missing is laid out again once it is installed.
+pub fn generation() -> u64 {
+    GENERATION.load(std::sync::atomic::Ordering::Relaxed)
 }
 
 /// Add faces from a source (skipping family+style pairs already present). Returns how many were
@@ -421,11 +478,162 @@ pub fn add_source(src: &dyn FontSource) -> usize {
 }
 
 /// Register a font from memory (e.g. a font file the user picked on the web). Returns its faces.
+/// WOFF and WOFF2 files are decoded first; a variable font registers one face per named
+/// instance.
 pub fn add_font_data(data: Vec<u8>) -> Vec<FaceId> {
+    add_font_data_from(data, "user")
+}
+
+/// [`add_font_data`] with the origin the faces report ("user", "library", …).
+pub fn add_font_data_from(data: Vec<u8>, origin: &'static str) -> Vec<FaceId> {
+    let Ok(data) = decode_container(data) else { return Vec::new() };
     let data = Arc::new(data);
-    let names = read_faces_bytes(&data);
+    let infos: Vec<FaceInfo> =
+        read_faces_bytes(&data).into_iter().flat_map(|n| expand_instances(info_from(n, FaceData::Shared(data.clone()), origin), &data)).collect();
     let mut d = db().write().unwrap_or_else(PoisonError::into_inner);
-    names.into_iter().map(|n| push(&mut d, info_from(n, FaceData::Shared(data.clone()), "user"))).collect()
+    infos.into_iter().map(|i| push(&mut d, i)).collect()
+}
+
+/// The faces a font file would register, without registering them (for previews and imports).
+pub fn describe(data: &[u8]) -> Result<Vec<FaceInfo>, String> {
+    let sfnt = decode_container(data.to_vec())?;
+    let shared = Arc::new(sfnt);
+    let infos: Vec<FaceInfo> =
+        read_faces_bytes(&shared).into_iter().flat_map(|n| expand_instances(info_from(n, FaceData::Shared(shared.clone()), "preview"), &shared)).collect();
+    if infos.is_empty() { Err("no usable font faces in the file (it needs outlines and a name table)".into()) } else { Ok(infos) }
+}
+
+/// The origin of faces registered from the persistent font library.
+pub const LIBRARY_ORIGIN: &str = "library";
+
+/// Largest font file accepted (decoded size included).
+pub const MAX_FONT_BYTES: usize = 64 * 1024 * 1024;
+
+/// The format of a font file from its first bytes: "woff2", "woff", "ttc", "otf", "ttf".
+pub fn container_format(data: &[u8]) -> Option<&'static str> {
+    match data.get(0..4)? {
+        b"wOF2" => Some("woff2"),
+        b"wOFF" => Some("woff"),
+        b"ttcf" => Some("ttc"),
+        b"OTTO" => Some("otf"),
+        [0, 1, 0, 0] | b"true" => Some("ttf"),
+        _ => None,
+    }
+}
+
+/// An SFNT (TrueType / OpenType / collection) font from a font file, decoding WOFF and WOFF2.
+/// Decoding runs under `catch_unwind`: a hostile file is an error, never a crash.
+pub fn decode_container(data: Vec<u8>) -> Result<Vec<u8>, String> {
+    if data.len() > MAX_FONT_BYTES {
+        return Err(format!("font file too large ({} bytes, max {MAX_FONT_BYTES})", data.len()));
+    }
+    let fmt = container_format(&data).ok_or("not a font file (TrueType, OpenType, WOFF or WOFF2)")?;
+    let decode = |f: fn(&[u8]) -> Result<Vec<u8>, wuff::WuffErr>, what: &str| -> Result<Vec<u8>, String> {
+        let out = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| f(&data))).map_err(|_| format!("the {what} file could not be decoded"))?;
+        let out = out.map_err(|e| format!("the {what} file could not be decoded: {e:?}"))?;
+        if out.len() > MAX_FONT_BYTES || container_format(&out).is_none_or(|f| f.starts_with("woff")) {
+            return Err(format!("the {what} file decodes to an unusable font"));
+        }
+        Ok(out)
+    };
+    match fmt {
+        "woff2" => decode(wuff::decompress_woff2, "WOFF2"),
+        "woff" => decode(wuff::decompress_woff1, "WOFF"),
+        _ => Ok(data),
+    }
+}
+
+/// The licence description and licence URL a font file states in its name table (IDs 13, 14).
+pub fn license_info(data: &[u8]) -> (Option<String>, Option<String>) {
+    let Ok(sfnt) = decode_container(data.to_vec()) else { return (None, None) };
+    let Ok(font) = FontRef::from_index(&sfnt, 0) else { return (None, None) };
+    let get = |id| font.localized_strings(id).english_or_first().map(|s| s.to_string()).filter(|s| !s.trim().is_empty());
+    (get(skrifa::string::StringId::LICENSE_DESCRIPTION), get(skrifa::string::StringId::LICENSE_URL))
+}
+
+/// Whether a font file is variable (has an `fvar` table with axes) and its axis tags.
+pub fn variable_axes(data: &[u8]) -> Vec<String> {
+    let Ok(sfnt) = decode_container(data.to_vec()) else { return Vec::new() };
+    let Ok(font) = FontRef::from_index(&sfnt, 0) else { return Vec::new() };
+    font.axes().iter().map(|a| String::from_utf8_lossy(&a.tag().to_be_bytes()).into_owned()).collect()
+}
+
+/// A variable font's named instances as faces (Thin … Black), each with its own style name and
+/// weight; a static font (or a variable one without named instances) as itself.
+fn expand_instances(base: FaceInfo, bytes: &[u8]) -> Vec<FaceInfo> {
+    let Ok(font) = FontRef::from_index(bytes, base.index) else { return vec![base] };
+    let instances = font.named_instances();
+    if instances.is_empty() {
+        return vec![base];
+    }
+    let axes = font.axes();
+    let axis = |tag: &[u8; 4]| axes.iter().position(|a| a.tag().to_be_bytes() == *tag);
+    let (wght, ital, slnt) = (axis(b"wght"), axis(b"ital"), axis(b"slnt"));
+    // Variable builds often name the family after the default instance ("Archivo SemiBold"
+    // with the wght default at 600): its instances belong to the family without that suffix.
+    let mut base = base;
+    let defaults: Vec<f32> = axes.iter().map(|a| a.default_value()).collect();
+    let default_name = instances
+        .iter()
+        .find(|i| i.user_coords().zip(&defaults).all(|(c, d)| (c - d).abs() < 0.01))
+        .and_then(|i| font.localized_strings(i.subfamily_name_id()).english_or_first().map(|s| s.to_string()));
+    if let Some(d) = default_name.filter(|d| !d.eq_ignore_ascii_case("Regular"))
+        && let Some(stem) = base.family.strip_suffix(d.as_str()).and_then(|s| s.strip_suffix(' '))
+        && !stem.trim().is_empty()
+    {
+        base.family = stem.trim().to_string();
+    }
+    let mut out: Vec<FaceInfo> = Vec::new();
+    for (k, inst) in instances.iter().enumerate().take(256) {
+        let Some(name) = font.localized_strings(inst.subfamily_name_id()).english_or_first().map(|s| s.to_string()) else { continue };
+        let coords: Vec<f32> = inst.user_coords().collect();
+        let weight = wght.and_then(|i| coords.get(i)).map(|w| w.round().clamp(1.0, 1000.0) as u16).unwrap_or(base.weight);
+        let italic = ital.and_then(|i| coords.get(i)).is_some_and(|v| *v >= 0.5)
+            || slnt.and_then(|i| coords.get(i)).is_some_and(|v| *v != 0.0)
+            || name.to_ascii_lowercase().contains("italic")
+            || (base.italic && ital.is_none() && slnt.is_none());
+        if out.iter().any(|f| f.style.eq_ignore_ascii_case(&name)) {
+            continue;
+        }
+        out.push(FaceInfo { style: name, weight, italic, instance: u16::try_from(k).ok(), ..base.clone() });
+    }
+    if out.is_empty() { vec![base] } else { out }
+}
+
+/// How a family and style resolve for rendering.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum FontStatus {
+    /// The exact face is installed.
+    Exact { face: FaceId },
+    /// The family is installed but not this style: another face of it is used, possibly with
+    /// synthetic bold or italic.
+    Substituted { face: FaceId, used_style: String, synthetic: bool },
+    /// The family is not installed: text renders in the default face instead.
+    Missing,
+}
+
+impl FontStatus {
+    pub fn is_exact(&self) -> bool {
+        matches!(self, FontStatus::Exact { .. })
+    }
+}
+
+/// Whether `family` / `style` will render as asked ([`resolve`] substitutes silently; callers
+/// that must not render a different typeface check this).
+pub fn status(family: &str, style: &str) -> FontStatus {
+    let family = if family.trim().is_empty() { DEFAULT_FAMILY } else { family.trim() };
+    let style = if style.trim().is_empty() { "Regular" } else { style.trim() };
+    let r = resolve(family, style);
+    if r.missing {
+        return FontStatus::Missing;
+    }
+    let f = face(r.face);
+    let exact = f.info.family.eq_ignore_ascii_case(family) && f.info.style.eq_ignore_ascii_case(style);
+    if exact && !r.synth_bold && !r.synth_italic {
+        FontStatus::Exact { face: r.face }
+    } else {
+        FontStatus::Substituted { face: r.face, used_style: f.info.style.clone(), synthetic: r.synth_bold || r.synth_italic }
+    }
 }
 
 /// Scan the system font folders once (native only; a no-op on wasm). Returns the number of faces
@@ -455,9 +663,21 @@ pub fn face(id: FaceId) -> Arc<Face> {
     d.faces.get(id).or_else(|| d.faces.first()).unwrap_or(&d.fallback).clone()
 }
 
-/// All faces (bundled first).
+/// All faces (bundled first), retired ones excluded.
 pub fn all_faces() -> Vec<Arc<Face>> {
-    db().read().unwrap_or_else(PoisonError::into_inner).faces.clone()
+    db().read().unwrap_or_else(PoisonError::into_inner).faces.iter().filter(|f| !f.is_retired()).cloned().collect()
+}
+
+/// Stop resolving and listing these faces (a font removed from the library). Ids stay valid:
+/// [`face`] still returns them, so layouts already made keep drawing.
+pub fn retire_faces(ids: &[FaceId]) {
+    let d = db().read().unwrap_or_else(PoisonError::into_inner);
+    for id in ids {
+        if let Some(f) = d.faces.get(*id) {
+            f.retired.store(true, std::sync::atomic::Ordering::Relaxed);
+        }
+    }
+    bump_generation();
 }
 
 /// Families with their style names, sorted by family; styles in weight order.
@@ -543,7 +763,9 @@ fn resolve_in(family: &str, style: &str) -> Option<Resolved> {
     if fam.is_empty() {
         return None;
     }
-    if let Some(f) = fam.iter().find(|f| f.info.style.eq_ignore_ascii_case(style)) {
+    // a font the user put in the library wins over a system copy of the same family and style
+    let exact = |f: &&&Arc<Face>| f.info.style.eq_ignore_ascii_case(style);
+    if let Some(f) = fam.iter().filter(exact).find(|f| f.info.origin == LIBRARY_ORIGIN).or_else(|| fam.iter().find(exact)) {
         return Some(Resolved { face: f.id, synth_bold: false, synth_italic: false, missing: false });
     }
     let (w, it) = style_wants(style);
@@ -722,8 +944,9 @@ mod tests {
             index: 0,
             data: FaceData::File(path.clone()),
             origin: "system",
+            instance: None,
         };
-        let f = Face { id: 0, info, bytes: OnceLock::new(), shaper: OnceLock::new() };
+        let f = Face::new(0, info);
         assert!(f.covers_text("A\u{416}"));
         assert!(!f.covers_text("A\u{5d0}"));
         assert!(f.bytes.get().is_none(), "probing coverage must not cache the file");

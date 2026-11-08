@@ -307,6 +307,9 @@ To take a brief and footage to a finished export on your own, use the perception
 commands in [autonomous-editing.md](autonomous-editing.md): `analyze.takes` (score takes),
 `script.align` (find each script line's best read), `analyze.beats` (tempo and beats),
 `qc.check` (judge the sequence against an edit spec) and `qc.filmstrip` (every cut in one image).
+Fonts a client's brand needs go in the persistent Font Library ([font-library.md](font-library.md):
+`fonts.library.import` with a licence, `fonts.missing`); exports refuse missing or substituted fonts
+unless `allowFontSubstitution` is passed, which is logged.
 
 # Part 2: developing FilmCraft
 

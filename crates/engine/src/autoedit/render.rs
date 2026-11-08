@@ -280,6 +280,30 @@ pub fn render_qc(s: &mut Session, p: &Value) -> Result<Value> {
     let has_audio = info.has_audio();
     checks.push(Check::new("audioPresent", has_audio, true, if has_audio { "the file has sound" } else { "the file has no sound" }, Value::Null));
 
+    // ---- fonts: every family and style of the edit renders as specified (no silent fallback).
+    // With the PSNR check below (the file matches the edit as rendered now) this shows the file's
+    // text was drawn in the specified fonts.
+    crate::font_library::ensure_loaded(s);
+    if let Some(seq_id) = s.state.active_sequence {
+        let report = crate::font_library::font_report(&s.project, seq_id, true);
+        let bad_fonts: Vec<&crate::font_library::FontCheck> = report.iter().filter(|c| c.status != "exact").collect();
+        for c in &bad_fonts {
+            checks.push(Check::new(
+                "fonts",
+                false,
+                true,
+                format!("{} {} is {}: drawn as {}", c.family, c.style, c.status, c.rendered_as.clone().unwrap_or_default()),
+                json!(c),
+            ));
+        }
+        if bad_fonts.is_empty() {
+            let used: Vec<String> = report.iter().map(|c| format!("{} {}", c.family, c.style)).collect();
+            let detail = if used.is_empty() { "the edit uses no fonts".to_string() } else { format!("{} font(s) render as specified", used.len()) };
+            checks.push(Check::new("fonts", true, true, detail, json!(used)));
+        }
+        measures["fonts"] = json!(report);
+    }
+
     // ---- the file matches the edit
     let n = u64_p(p, "samples").unwrap_or(6).clamp(2, 40) as i64;
     let mut worst = f64::INFINITY;

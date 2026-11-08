@@ -21,6 +21,7 @@ pub mod demo;
 pub mod doc_path;
 pub mod essential_sound;
 pub mod export_tools;
+pub mod font_library;
 pub mod graphic_templates;
 pub mod graphics;
 pub mod interchange;
@@ -499,6 +500,8 @@ pub struct Session {
     /// Decision log of the autonomous-editing commands (`script.assemble`, `qc.render`,
     /// `autoedit.note`), read by `autoedit.report`. Session-only: not saved with the project.
     pub autoedit_log: Vec<serde_json::Value>,
+    /// Font library folder override (tests, portable setups); None = `<data dir>/Font Library`.
+    pub font_library_dir: Option<std::path::PathBuf>,
     /// Effect presets (built-in + the user's, persisted in the data directory).
     pub presets: presets::PresetLibrary,
     /// Export presets (built-in + the user's, persisted in the data directory) and favourites.
@@ -609,6 +612,7 @@ impl Session {
             mask_jobs: Vec::new(),
             scene_jobs: Vec::new(),
             autoedit_log: Vec::new(),
+            font_library_dir: None,
             presets: Default::default(),
             export_presets: Default::default(),
             export_queue: Default::default(),
@@ -665,6 +669,7 @@ impl Session {
         self.presets.set_dir(&cfg.data_dir);
         self.export_presets.set_dir(&cfg.data_dir);
         self.prefs_path = Some(prefs_path);
+        font_library::ensure_loaded(self);
         self.apply_media_cache();
         self.persistence = Some(autosave::Persistence::start(&cfg, self.prefs.auto_save.clone())?);
         self.sync_persistence();
@@ -1366,6 +1371,8 @@ mod explicit_targets_tests;
 mod export_tests;
 #[cfg(test)]
 mod file_tests;
+#[cfg(test)]
+mod font_library_tests;
 #[cfg(test)]
 mod gap_selection_tests;
 #[cfg(test)]

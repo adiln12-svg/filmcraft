@@ -604,6 +604,8 @@ pub fn export_media(s: &mut Session, p: &Value) -> Result<Value> {
     }
     let project = s.project.clone();
     let (range, warnings) = range_with_warnings(s, &project, seq, p.get("range"), p, cmd)?;
+    let mut warnings: Vec<String> = warnings.into_iter().map(String::from).collect();
+    warnings.extend(crate::font_library::check_export(s, &project, seq, &settings, bool_p(p, "allowFontSubstitution").unwrap_or(false), cmd)?);
     settings.range = range;
     settings.path = output_path(s, p, seq, &settings, None);
     let wait = bool_p(p, "wait").unwrap_or(false);
@@ -809,7 +811,7 @@ fn queue_add(s: &mut Session, p: &Value) -> Result<Value> {
     let mut ids = Vec::new();
     let mut n = 0usize;
     let mut items = Vec::new();
-    let mut warnings = Vec::new();
+    let mut warnings: Vec<String> = Vec::new();
     for &seq in &seqs {
         for r in &ranges {
             let mut st = settings.clone();
@@ -819,13 +821,17 @@ fn queue_add(s: &mut Session, p: &Value) -> Result<Value> {
             };
             let (range, range_warnings) = range_param(s, &project, seq, *r, times, cmd)?;
             st.range = range;
-            warnings.extend(range_warnings);
+            warnings.extend(range_warnings.into_iter().map(String::from));
             // several ranges of one sequence get numbered names; several sequences their own names
             let suffix = if many && (ranges.len() > 1 || str_p(p, "path").is_some_and(|x| !is_folder(&expand_home(x)))) { Some(n) } else { None };
             st.path = output_path(s, p, seq, &st, suffix);
             n += 1;
             items.push((seq, st));
         }
+    }
+    let allow_fonts = bool_p(p, "allowFontSubstitution").unwrap_or(false);
+    for (seq, st) in &items {
+        warnings.extend(crate::font_library::check_export(s, &project, *seq, st, allow_fonts, cmd)?);
     }
     for (seq, st) in items {
         s.export_queue.next_id += 1;
@@ -980,6 +986,8 @@ fn quick(s: &mut Session, p: &Value) -> Result<Value> {
     let (preset, mut settings) = settings_from_params(s, &q, cmd)?;
     let project = s.project.clone();
     let (range, warnings) = range_with_warnings(s, &project, seq, q.get("range"), &q, cmd)?;
+    let mut warnings: Vec<String> = warnings.into_iter().map(String::from).collect();
+    warnings.extend(crate::font_library::check_export(s, &project, seq, &settings, bool_p(p, "allowFontSubstitution").unwrap_or(false), cmd)?);
     settings.range = range;
     settings.path = output_path(s, &q, seq, &settings, None);
     let wait = bool_p(p, "wait").unwrap_or(false);
@@ -1231,7 +1239,7 @@ pub(crate) fn commands() -> Vec<CommandSpec> {
         spec(
             "export.queue.add",
             "Send to Export Queue",
-            r#"{…settings params,"path":str|dir?,"sequences":[id]?,"ranges":[range]?,"start":bool?,"wait":bool?}"#,
+            r#"{…settings params,"path":str|dir?,"sequences":[id]?,"ranges":[range]?,"start":bool?,"wait":bool?,"allowFontSubstitution":bool=false}"#,
             has_seq,
             queue_add,
             true,
@@ -1244,7 +1252,14 @@ pub(crate) fn commands() -> Vec<CommandSpec> {
         spec("export.queue.remove", "Remove Queued Export", r#"{"id":id}"#, always, queue_remove, true),
         spec("export.queue.move", "Reorder Queued Export", r#"{"id":id,"to":index?,"by":int?}"#, always, queue_move, true),
         spec("export.queue.clear", "Clear Finished Exports", r#"{"all":bool=false}"#, always, queue_clear, true),
-        spec("export.quick", "Quick Export", r#"{"preset":str?,"path":str?,"wait":bool?, …settings params}"#, has_seq, quick, true),
+        spec(
+            "export.quick",
+            "Quick Export",
+            r#"{"preset":str?,"path":str?,"wait":bool?,"allowFontSubstitution":bool=false, …settings params}"#,
+            has_seq,
+            quick,
+            true,
+        ),
     ]
 }
 

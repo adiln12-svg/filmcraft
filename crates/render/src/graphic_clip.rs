@@ -529,6 +529,8 @@ pub fn raster_layer_cached(spec: &LayerSpec, m: &Xform, cw: usize, ch: usize) ->
     format!("{spec:?}").hash(&mut hs);
     m.iter().for_each(|v| v.to_bits().hash(&mut hs));
     (cw, ch).hash(&mut hs);
+    // a font installed or removed since changes how the same text is drawn
+    filmcraft_text::fonts::generation().hash(&mut hs);
     let key = hs.finish();
     static CLOCK: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     let now = CLOCK.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
