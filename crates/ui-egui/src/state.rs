@@ -451,6 +451,9 @@ pub struct UiState {
     /// Window ▸ Palette Library.
     #[serde(skip)]
     pub palette_library: crate::panels::palette_library::State,
+    /// Window ▸ Brand Kits.
+    #[serde(skip)]
+    pub brand_kits: crate::panels::brand_kits::State,
     #[serde(skip)]
     pub marker_properties: Option<crate::panels::marker_properties::Draft>,
     #[serde(skip)]
@@ -1002,6 +1005,7 @@ impl Default for UiState {
             palette_manager: None,
             font_library: Default::default(),
             palette_library: Default::default(),
+            brand_kits: Default::default(),
             custom_label_color: None,
             language: crate::i18n::Language::default(),
             tool: Tool::Selection,

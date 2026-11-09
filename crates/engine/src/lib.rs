@@ -13,6 +13,7 @@
 pub mod aaf_omf;
 pub mod autoedit;
 pub mod autosave;
+pub mod brand_kits;
 pub mod captions;
 pub mod clip_ops;
 pub mod color;
@@ -1360,6 +1361,8 @@ mod audio_placement_tests;
 mod autosave_tests;
 #[cfg(test)]
 mod avi_import_tests;
+#[cfg(test)]
+mod brand_kits_tests;
 #[cfg(test)]
 mod clip_mismatch_tests;
 #[cfg(test)]

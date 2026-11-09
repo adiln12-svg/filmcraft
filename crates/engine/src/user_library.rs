@@ -54,6 +54,16 @@ pub fn sha256_hex(b: &[u8]) -> String {
     Sha256::digest(b).iter().map(|x| format!("{x:02x}")).collect()
 }
 
+/// A new identifier `<prefix>_<12 hex>`: unique (time, a process counter and the process id go
+/// into it) and stable once stored.
+pub fn new_id(prefix: &str, seed: &str) -> String {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static N: AtomicU64 = AtomicU64::new(0);
+    let nanos = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or(0);
+    let h = sha256_hex(format!("{seed}\u{1}{nanos}\u{1}{}\u{1}{}", N.fetch_add(1, Ordering::Relaxed), std::process::id()).as_bytes());
+    format!("{prefix}_{}", h.get(..12).unwrap_or(&h))
+}
+
 /// The current time as RFC 3339 UTC, to the second.
 pub fn now_rfc3339() -> String {
     chrono::DateTime::from_timestamp(crate::autosave::unix_now(), 0).map(|d| d.to_rfc3339_opts(chrono::SecondsFormat::Secs, true)).unwrap_or_default()

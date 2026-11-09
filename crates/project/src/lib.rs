@@ -83,6 +83,22 @@ id_type!(ClipId);
 id_type!(TransitionId);
 id_type!(MarkerId);
 
+/// A project's reference to one approved version of a client brand kit (`kit_…@N`), with the
+/// fingerprint of that version so a changed or missing kit is detected instead of silently used.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BrandPin {
+    pub client: String,
+    pub client_name: String,
+    pub kit: String,
+    pub kit_name: String,
+    pub version: u32,
+    pub sha256: String,
+    /// When and by whom the pin was set or last moved.
+    pub pinned_at: String,
+    pub pinned_by: String,
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Project {
     pub name: String,
@@ -120,6 +136,11 @@ pub struct Project {
     /// instructions for whoever opens it next, frame numbers and the like. Schema v15.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub notes: String,
+    /// The approved client brand-kit version this project uses (Window ▸ Brand Kits). The pin is
+    /// exact: a newer approved version of the kit is used only when someone moves the pin.
+    /// Schema v18.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub brand: Option<BrandPin>,
 }
 
 impl Default for Project {
@@ -149,6 +170,7 @@ impl Project {
             source_graphics: BTreeMap::new(),
             narrations: BTreeMap::new(),
             notes: String::new(),
+            brand: None,
         }
     }
 

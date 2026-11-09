@@ -558,10 +558,40 @@ pub fn check_export(
 /// A preview of `text` in a family + style as straight RGBA (dark text on transparent), drawn by
 /// the text engine that renders titles and captions. None when nothing is drawn.
 pub fn preview_rgba(family: &str, style: &str, text: &str, size: f32) -> Option<(u32, u32, Vec<u8>)> {
-    let size = if size.is_finite() { size.clamp(6.0, 400.0) } else { 48.0 };
+    preview_rgba_tracked(family, style, text, size, 0.0)
+}
+
+/// [`preview_rgba`] with tracking in em (`-0.03` = the CSS `letter-spacing: -0.03em`).
+pub fn preview_rgba_tracked(family: &str, style: &str, text: &str, size: f32, tracking_em: f32) -> Option<(u32, u32, Vec<u8>)> {
+    preview_rgba_box(family, style, text, size, tracking_em, None, None)
+}
+
+/// [`preview_rgba_tracked`] wrapped to `width` pixels with `line_height` (a multiple of the size,
+/// CSS `line-height`), for previews of text set in a box.
+pub fn preview_rgba_box(
+    family: &str,
+    style: &str,
+    text: &str,
+    size: f32,
+    tracking_em: f32,
+    width: Option<f32>,
+    line_height: Option<f32>,
+) -> Option<(u32, u32, Vec<u8>)> {
+    let size = if size.is_finite() { size.clamp(4.0, 400.0) } else { 48.0 };
+    let tracking = if tracking_em.is_finite() { (tracking_em * 1000.0).clamp(-500.0, 2000.0) } else { 0.0 };
     let text: String = text.chars().take(200).collect();
-    let st = filmcraft_text::TextStyle { family: family.into(), style: style.into(), size, ..Default::default() };
-    let l = filmcraft_text::layout(&text, &st, &filmcraft_text::ParagraphStyle::default());
+    let st = filmcraft_text::TextStyle { family: family.into(), style: style.into(), size, tracking, ..Default::default() };
+    let mut ps = filmcraft_text::ParagraphStyle::default();
+    if let Some(w) = width.filter(|w| w.is_finite() && *w > 1.0) {
+        ps.width = Some(w.min(8000.0));
+    }
+    // CSS line-height as the line pitch: leading is added on top of the font's own line height
+    if let Some(lh) = line_height.filter(|v| v.is_finite() && *v > 0.0) {
+        let natural = filmcraft_text::fonts::face(filmcraft_text::resolve(family, style).face).metrics(size);
+        let natural = natural.ascent + natural.descent + natural.line_gap;
+        ps.leading = (lh.clamp(0.3, 5.0) * size - natural).clamp(-size, 4.0 * size);
+    }
+    let l = filmcraft_text::layout(&text, &st, &ps);
     let (m, _, _) = filmcraft_text::render::rasterize(&l, &filmcraft_text::render::at(0.0, 0.0));
     if m.w == 0 || m.h == 0 || m.w > 8192 || m.h > 4096 {
         return None;
@@ -641,6 +671,24 @@ fn import_cmd(s: &mut Session, p: &Value) -> Result<Value> {
     let replace = bool_p(p, "replace").unwrap_or(false);
     let mut out = Vec::new();
     for path in &paths {
+        // replacing removes the older file: refused when an approved brand kit uses it
+        if replace
+            && let (Some(bd), Ok(bytes)) = (crate::brand_kits::Dirs::of(s), read_font_file(Path::new(path)))
+            && let Ok(ins) = inspect_bytes(&bytes)
+        {
+            let m = read_manifest(&dir).map_err(|e| bad("fonts.library.import", e))?;
+            for f in m.fonts.iter().filter(|f| {
+                f.faces.iter().any(|a| ins.faces.iter().any(|b| a.family.eq_ignore_ascii_case(&b.family) && a.style.eq_ignore_ascii_case(&b.style)))
+            }) {
+                let kits = crate::brand_kits::font_users(&bd, &f.id);
+                if !kits.is_empty() && f.sha256 != ins.sha256 {
+                    return Err(bad(
+                        "fonts.library.import",
+                        format!("{path}: would replace {} which approved brand kits use ({})", f.families().join(", "), kits.join(", ")),
+                    ));
+                }
+            }
+        }
         let r = import(&dir, Path::new(path), license.clone(), replace).map_err(|e| bad("fonts.library.import", format!("{path}: {e}")))?;
         out.push(json!({"font": font_json(&r.font), "added": r.added, "replaced": r.replaced, "registeredFaces": r.registered_faces}));
     }
@@ -663,6 +711,13 @@ fn remove_cmd(s: &mut Session, p: &Value) -> Result<Value> {
             "fonts.library.remove",
             format!("the open project uses {}; pass force to remove it anyway (its text will be reported missing)", used.join(", ")),
         ));
+    }
+    // approved brand kits keep their exact fonts: never removed, `force` or not
+    if let Some(bd) = crate::brand_kits::Dirs::of(s) {
+        let kits = crate::brand_kits::font_users(&bd, id);
+        if !kits.is_empty() {
+            return Err(bad("fonts.library.remove", format!("approved brand kits use this font ({}); it cannot be removed", kits.join(", "))));
+        }
     }
     let f = remove(&dir, id).map_err(|e| bad("fonts.library.remove", e))?;
     Ok(json!({"removed": f.id, "families": f.families(), "wasUsed": used}))

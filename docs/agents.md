@@ -313,6 +313,11 @@ unless `allowFontSubstitution` is passed, which is logged.
 Brand colours go in the Colour Palette Library ([palette-library.md](palette-library.md): `palettes.get`,
 `palettes.resolve` for exact values and the stated rules; `palettes.update` with `baseVersion`, `by` and
 `note` saves a new version and never changes a saved one).
+A client's brand is a Brand Kit ([brand-kits.md](brand-kits.md)): read the project's pinned version with
+`brand.project.get` and exact values with `brand.kits.get` / `brand.resolve`; save drafts with
+`brand.kits.saveDraft` (`by`, `note`). Never approve a kit (`brand.kits.approve`) or move a project's pin
+(`authorizeUpdate`, `replaceClient`) without a person's explicit authorisation, and never edit kits managed
+by ARCA.
 
 # Part 2: developing FilmCraft
 

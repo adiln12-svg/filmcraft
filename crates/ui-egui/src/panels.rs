@@ -486,6 +486,7 @@ pub(crate) mod transcript_cache;
 pub mod custom_colors;
 pub mod marker_properties;
 
+pub mod brand_kits;
 pub mod font_library;
 pub mod markers_panel;
 pub mod palette_library;

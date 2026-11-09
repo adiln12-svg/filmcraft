@@ -87,6 +87,10 @@ pub fn open(app: &mut FilmcraftApp) {
 /// Menu entry points.
 pub fn route(app: &mut FilmcraftApp, id: &str, params: &Value) -> Option<Result<Value, String>> {
     match id {
+        "window.paletteLibrary" if params.get("close").and_then(Value::as_bool) == Some(true) => {
+            app.ui.palette_library.open = false;
+            Some(Ok(json!({"open": false})))
+        }
         "window.paletteLibrary" => {
             open(app);
             if let Some(p) = params.get("select").and_then(Value::as_str) {

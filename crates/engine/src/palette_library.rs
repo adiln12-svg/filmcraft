@@ -22,7 +22,6 @@
 //! same ones. See `docs/palette-library.md`.
 
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
 
 use filmcraft_project::HexColor;
 use serde::{Deserialize, Serialize};
@@ -229,10 +228,7 @@ fn modify<T>(dir: &Path, f: impl FnOnce(&mut Library) -> std::result::Result<T, 
 }
 
 fn new_id(prefix: &str, seed: &str) -> String {
-    static N: AtomicU64 = AtomicU64::new(0);
-    let nanos = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or(0);
-    let h = sha256_hex(format!("{seed}\u{1}{nanos}\u{1}{}\u{1}{}", N.fetch_add(1, Ordering::Relaxed), std::process::id()).as_bytes());
-    format!("{prefix}_{}", h.get(..12).unwrap_or(&h))
+    crate::user_library::new_id(prefix, seed)
 }
 
 /// A new colour id (`col_…`), for editors that build a version before saving it.
@@ -823,6 +819,12 @@ fn delete_cmd(s: &mut Session, p: &Value) -> Result<Value> {
     let id = str_p(p, "id").ok_or_else(|| bad(cmd, "need `id`"))?;
     if !bool_p(p, "confirm").unwrap_or(false) {
         return Err(bad(cmd, "deleting a palette removes every version of it; pass confirm: true (archive keeps it)"));
+    }
+    if let Some(bd) = crate::brand_kits::Dirs::of(s) {
+        let kits = crate::brand_kits::palette_users(&bd, id);
+        if !kits.is_empty() {
+            return Err(bad(cmd, format!("approved brand kits use this palette ({}); archive it instead", kits.join(", "))));
+        }
     }
     let pal = delete(&dir_of(s, cmd)?, id).map_err(|e| bad(cmd, e))?;
     Ok(json!({"deleted": pal.id, "name": pal.name, "versions": pal.versions.len()}))

@@ -113,6 +113,10 @@ fn refresh(app: &mut FilmcraftApp) {
 /// Menu entry points.
 pub fn route(app: &mut FilmcraftApp, id: &str, params: &Value) -> Option<Result<Value, String>> {
     match id {
+        "window.fontLibrary" if params.get("close").and_then(Value::as_bool) == Some(true) => {
+            app.ui.font_library.open = false;
+            Some(Ok(json!({"open": false})))
+        }
         "window.fontLibrary" => {
             open(app);
             Some(Ok(json!({"open": true})))
