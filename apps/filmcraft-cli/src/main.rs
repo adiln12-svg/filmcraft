@@ -181,8 +181,8 @@ impl Backend {
         // user export presets (and other per-user libraries) from the data directory
         if let Some(dir) = a.opt("--data-dir").map(std::path::PathBuf::from).or_else(filmcraft_engine::autosave::default_data_dir) {
             s.export_presets.set_dir(&dir);
-            // the persistent font library, registered before any project renders
-            s.font_library_dir = Some(dir.join(filmcraft_engine::font_library::DIR_NAME));
+            // the per-user libraries (fonts, palettes); fonts register before any project renders
+            s.library_data_dir = Some(dir.clone());
         }
         filmcraft_engine::font_library::ensure_loaded(&s);
         if let Some(p) = a.opt("--project") {

@@ -39,6 +39,7 @@ pub mod mixer;
 pub mod multicam;
 pub mod narration;
 mod palette;
+pub mod palette_library;
 pub mod panels;
 pub mod paste_media;
 pub mod perf;
@@ -61,6 +62,7 @@ pub mod source_monitor;
 pub mod sync;
 pub mod transcript;
 pub mod trim;
+pub mod user_library;
 pub mod voiceover;
 
 use std::sync::Arc;
@@ -500,8 +502,9 @@ pub struct Session {
     /// Decision log of the autonomous-editing commands (`script.assemble`, `qc.render`,
     /// `autoedit.note`), read by `autoedit.report`. Session-only: not saved with the project.
     pub autoedit_log: Vec<serde_json::Value>,
-    /// Font library folder override (tests, portable setups); None = `<data dir>/Font Library`.
-    pub font_library_dir: Option<std::path::PathBuf>,
+    /// Data directory of the per-user libraries (Font Library, Palette Library) when it is not
+    /// the preferences' one: the CLI's `--data-dir`, tests. See [`user_library::data_dir`].
+    pub library_data_dir: Option<std::path::PathBuf>,
     /// Effect presets (built-in + the user's, persisted in the data directory).
     pub presets: presets::PresetLibrary,
     /// Export presets (built-in + the user's, persisted in the data directory) and favourites.
@@ -612,7 +615,7 @@ impl Session {
             mask_jobs: Vec::new(),
             scene_jobs: Vec::new(),
             autoedit_log: Vec::new(),
-            font_library_dir: None,
+            library_data_dir: None,
             presets: Default::default(),
             export_presets: Default::default(),
             export_queue: Default::default(),
@@ -1413,6 +1416,8 @@ mod nest_editing_tests;
 mod nest_fidelity_tests;
 #[cfg(test)]
 mod nesting_tests;
+#[cfg(test)]
+mod palette_library_tests;
 #[cfg(test)]
 mod panels_tests;
 #[cfg(test)]

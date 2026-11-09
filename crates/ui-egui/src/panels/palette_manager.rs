@@ -108,9 +108,16 @@ pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) {
                     draft.color = ColorDraft::new([128, 128, 128]);
                     draft.error.clear();
                 }
+                // the project's swatches; reusable palettes live in the Palette Library
+                let r = ui.button(tl!("Palette Library…"));
+                app.auto.add_response("palette.library", &r, tl!("Open the Palette Library"));
+                if r.clicked() {
+                    close = true;
+                    super::palette_library::open(app);
+                }
                 let r = ui.button(tl!("Done"));
                 app.auto.add_response("palette.close", &r, tl!("Done"));
-                close = r.clicked();
+                close |= r.clicked();
             });
         }
         if !draft.error.is_empty() {

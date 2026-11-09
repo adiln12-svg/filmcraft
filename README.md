@@ -282,6 +282,7 @@ The control protocol is documented in [docs/control-protocol.md](docs/control-pr
 | [docs/agents.md](docs/agents.md) | Driving FilmCraft over MCP and the control channel; how agents develop it |
 | [docs/autonomous-editing.md](docs/autonomous-editing.md) | Editing from a brief with no person watching: take scoring, script alignment, beat tracking, edit-spec QC |
 | [docs/font-library.md](docs/font-library.md) | The persistent Font Library (Window ▸ Font Library): TTF/OTF/WOFF/WOFF2, variable-font weights, licences, and exports that refuse missing or substituted fonts |
+| [docs/palette-library.md](docs/palette-library.md) | The Colour Palette Library (Window ▸ Palette Library): reusable palettes with roles, shades, usage rules and immutable versions |
 | [docs/control-protocol.md](docs/control-protocol.md) | Control-channel and MCP reference |
 | [docs/project-files.md](docs/project-files.md) | `.fcproj` format, schema migrations, auto-save and crash recovery |
 | [docs/graphics.md](docs/graphics.md) · [docs/captions.md](docs/captions.md) | Text engine, graphic clips and tools; caption tracks and formats |

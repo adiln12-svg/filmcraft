@@ -130,6 +130,7 @@ pub const UI_COMMANDS: &[UiCommand] = &[
     uic!("window.workspace.saveAs", "Save as New Workspace…", ["Window", "Workspaces"], None),
     uic!("window.workspace.edit", "Edit Workspaces…", ["Window", "Workspaces"], None),
     uic!("window.fontLibrary", "Font Library…", ["Window"], None),
+    uic!("window.paletteLibrary", "Palette Library…", ["Window"], None),
     uic!("fontLibrary.addFonts", "Add Fonts to Library…", [], None),
     uic!("tool.selection", "Selection Tool", [], Some("V")),
     uic!("tool.trackSelectForward", "Track Select Forward Tool", [], Some("A")),
@@ -349,6 +350,9 @@ pub fn invoke_command(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, mut
         return r;
     }
     if let Some(r) = crate::panels::settings::route(app, id) {
+        return r;
+    }
+    if let Some(r) = crate::panels::palette_library::route(app, id, &params) {
         return r;
     }
     if let Some(r) = crate::panels::font_library::route(app, id, &params) {

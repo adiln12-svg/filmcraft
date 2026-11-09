@@ -42,13 +42,15 @@ fn ofl() -> License {
 }
 
 fn session_with(lib: &Path) -> Session {
-    Session { font_library_dir: Some(lib.to_path_buf()), ..Default::default() }
+    // `lib` is `<data dir>/Font Library`
+    assert!(lib.ends_with(font_library::DIR_NAME));
+    Session { library_data_dir: lib.parent().map(Path::to_path_buf), ..Default::default() }
 }
 
 #[test]
 fn import_needs_a_licence_and_registers_the_font() {
     let d = tmp("import");
-    let lib = d.join("lib");
+    let lib = d.join(font_library::DIR_NAME);
     let f = renamed_font("Fltaa", &d);
     assert_eq!(filmcraft_text::fonts::status("Fltaa", "Regular"), filmcraft_text::fonts::FontStatus::Missing);
     for spdx in ["", "  ", "NOASSERTION", "none", "OFL<1.1>"] {
@@ -76,7 +78,7 @@ fn import_needs_a_licence_and_registers_the_font() {
 #[test]
 fn a_second_font_with_the_same_family_and_style_needs_replace() {
     let d = tmp("clash");
-    let lib = d.join("lib");
+    let lib = d.join(font_library::DIR_NAME);
     let a = renamed_font("Fltbb", &d);
     font_library::import(&lib, &a, ofl(), false).unwrap();
     // same names, different bytes
@@ -100,7 +102,7 @@ fn a_second_font_with_the_same_family_and_style_needs_replace() {
 #[test]
 fn removing_a_font_makes_it_missing_and_deletes_the_file() {
     let d = tmp("remove");
-    let lib = d.join("lib");
+    let lib = d.join(font_library::DIR_NAME);
     let f = renamed_font("Fltcc", &d);
     let r = font_library::import(&lib, &f, ofl(), false).unwrap();
     let mut s = session_with(&lib);
@@ -119,7 +121,7 @@ fn removing_a_font_makes_it_missing_and_deletes_the_file() {
 #[test]
 fn a_damaged_or_changed_library_is_reported_not_trusted() {
     let d = tmp("damaged");
-    let lib = d.join("lib");
+    let lib = d.join(font_library::DIR_NAME);
     std::fs::create_dir_all(&lib).unwrap();
     std::fs::write(lib.join("library.json"), b"{ not json").unwrap();
     let f = renamed_font("Fltdd", &d);
@@ -143,7 +145,7 @@ fn a_damaged_or_changed_library_is_reported_not_trusted() {
 #[test]
 fn hostile_files_are_refused() {
     let d = tmp("hostile");
-    let lib = d.join("lib");
+    let lib = d.join(font_library::DIR_NAME);
     for (name, bytes) in [("empty.ttf", Vec::new()), ("text.otf", b"hello".to_vec()), ("trunc.woff2", b"wOF2\0\x01\0\0".to_vec())] {
         let p = d.join(name);
         std::fs::write(&p, bytes).unwrap();
@@ -156,7 +158,7 @@ fn hostile_files_are_refused() {
 #[test]
 fn export_refuses_missing_and_substituted_fonts_unless_allowed() {
     let d = tmp("export");
-    let lib = d.join("lib");
+    let lib = d.join(font_library::DIR_NAME);
     let mut s = session_with(&lib);
     s.execute("file.newSequence", json!({"width": 64, "height": 36})).unwrap();
     s.execute("graphics.newText", json!({"text": "Brand", "font": "Fltee", "fontStyle": "Regular", "size": 20, "seconds": 0.2})).unwrap();
@@ -196,7 +198,7 @@ fn export_refuses_missing_and_substituted_fonts_unless_allowed() {
 #[test]
 fn library_commands_list_inspect_preview() {
     let d = tmp("commands");
-    let lib = d.join("lib");
+    let lib = d.join(font_library::DIR_NAME);
     let f = renamed_font("Fltff", &d);
     let mut s = session_with(&lib);
     let ins = s.execute("fonts.library.inspect", json!({"path": f.to_string_lossy()})).unwrap();
@@ -227,7 +229,7 @@ fn library_commands_list_inspect_preview() {
 #[test]
 fn installing_a_font_changes_the_rendered_title() {
     let d = tmp("rerender");
-    let lib = d.join("lib");
+    let lib = d.join(font_library::DIR_NAME);
     let mut s = session_with(&lib);
     s.execute("file.newSequence", json!({"width": 160, "height": 90})).unwrap();
     // Noto Serif renamed (same length), so its outlines differ from the Inter stand-in

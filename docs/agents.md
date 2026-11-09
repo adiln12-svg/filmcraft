@@ -310,6 +310,9 @@ commands in [autonomous-editing.md](autonomous-editing.md): `analyze.takes` (sco
 Fonts a client's brand needs go in the persistent Font Library ([font-library.md](font-library.md):
 `fonts.library.import` with a licence, `fonts.missing`); exports refuse missing or substituted fonts
 unless `allowFontSubstitution` is passed, which is logged.
+Brand colours go in the Colour Palette Library ([palette-library.md](palette-library.md): `palettes.get`,
+`palettes.resolve` for exact values and the stated rules; `palettes.update` with `baseVersion`, `by` and
+`note` saves a new version and never changes a saved one).
 
 # Part 2: developing FilmCraft
 

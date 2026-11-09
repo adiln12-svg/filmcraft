@@ -97,6 +97,35 @@ impl ColorDraft {
     }
 }
 
+/// Red, green and blue fields (0–255) for `draft`, for editors that offer exact RGB entry next
+/// to the picker and the hex field.
+pub fn rgb_fields(ui: &mut egui::Ui, auto: &mut Registry, prefix: &str, draft: &mut ColorDraft) {
+    let mut rgb = draft.preview_rgb();
+    let mut changed = false;
+    ui.horizontal(|ui| {
+        for (i, (label, key)) in [(tl!("R"), "r"), (tl!("G"), "g"), (tl!("B"), "b")].into_iter().enumerate() {
+            ui.label(label);
+            if let Some(v) = rgb.get_mut(i) {
+                let r = ui.add(egui::DragValue::new(v).range(0..=255).speed(1.0));
+                auto.add_response(&format!("{prefix}.{key}"), &r, label);
+                changed |= r.changed();
+            }
+        }
+    });
+    if changed {
+        draft.rgb = rgb;
+        draft.hex = HexColor(rgb).hex().trim_start_matches('#').to_string();
+        if let Some(session) = &draft.native {
+            if let Err(error) = session.set_color(rgb) {
+                draft.native_error = Some(error);
+                draft.close_native();
+            } else {
+                draft.native_last = Some(rgb);
+            }
+        }
+    }
+}
+
 fn default_rgb() -> [u8; 3] {
     [128, 128, 128]
 }

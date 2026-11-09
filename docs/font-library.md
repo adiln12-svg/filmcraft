@@ -12,7 +12,7 @@ same functions as commands.
 | Formats | TrueType (`.ttf`), OpenType (`.otf`), collections (`.ttc`, `.otc`), WOFF (`.woff`), WOFF2 (`.woff2`) |
 | Variable fonts | one style per named instance (Archivo: Thin 100 … Black 900). Metrics, outlines and shaping use the instance's design-space location, so Black renders at weight 900. Checked against Chromium drawing the same WOFF2: advance widths within 0.5 %, coverage within 2 % at 100, 400, 700 and 900 |
 | Family names | variable builds that name the family after their default instance ("Archivo SemiBold" with a SemiBold default) are listed under the family ("Archivo") |
-| Where | `<data dir>/Font Library/`: the font files (named by content hash) and `library.json`. The data directory is `FILMCRAFT_DATA_DIR`, a portable install's `data/`, or the per-user folder (`~/.local/share/filmcraft`, `~/Library/Application Support/FilmCraft`, `%APPDATA%\FilmCraft`); `filmcraft-cli --data-dir` sets it for the CLI |
+| Where | `<data dir>/Font Library/`: the font files (named by content hash) and `library.json`. The data directory is `FILMCRAFT_DATA_DIR`, a portable install's `data/`, or the per-user folder (`~/.local/share/filmcraft`, `~/Library/Application Support/FilmCraft`, `%APPDATA%\FilmCraft`); `filmcraft-cli --data-dir` sets it for the CLI. The [Palette Library](palette-library.md) lives in the same data directory |
 
 WOFF and WOFF2 are decoded by [`wuff`](https://crates.io/crates/wuff) 0.2.9 (MIT, pure Rust, no
 `unsafe` in the crate; Brotli by `brotli-decompressor`, BSD-3-Clause/MIT, built without its opt-in

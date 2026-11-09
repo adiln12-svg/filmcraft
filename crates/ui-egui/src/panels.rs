@@ -488,4 +488,5 @@ pub mod marker_properties;
 
 pub mod font_library;
 pub mod markers_panel;
+pub mod palette_library;
 pub mod palette_manager;

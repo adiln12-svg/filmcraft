@@ -23,9 +23,9 @@ use filmcraft_project::{ItemId, ItemKind, ParamValue, Project, graphic};
 use filmcraft_text::fonts::{self, FaceId, FontStatus};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
-use sha2::{Digest, Sha256};
 
 use crate::commands::{CommandSpec, always, bad, bool_p, f64_p, str_p, u64_p};
+use crate::user_library::{now_rfc3339, read_json, sha256_hex, write_atomic, write_json};
 use crate::{Result, Session};
 
 /// Folder of the library inside the data directory.
@@ -117,45 +117,23 @@ fn registry() -> std::sync::MutexGuard<'static, Registry> {
 /// The library folder: the session's override, else `<data dir>/Font Library` (the data
 /// directory of the preferences file, or the default one).
 pub fn library_dir(s: &Session) -> Option<PathBuf> {
-    if let Some(d) = &s.font_library_dir {
-        return Some(d.clone());
-    }
-    let data = s.prefs_path.as_ref().and_then(|p| p.parent().map(Path::to_path_buf)).or_else(crate::autosave::default_data_dir)?;
-    Some(data.join(DIR_NAME))
+    crate::user_library::data_dir(s).map(|d| d.join(DIR_NAME))
 }
 
 /// Read the manifest (an absent folder or manifest is an empty library; an unreadable one is an
 /// error, so a damaged library is never silently treated as empty when writing).
 pub fn read_manifest(dir: &Path) -> std::result::Result<Manifest, String> {
-    let path = dir.join(MANIFEST);
-    match std::fs::read(&path) {
-        Ok(b) => {
-            let mut m: Manifest = serde_json::from_slice(&b).map_err(|e| format!("the font library manifest {} is damaged: {e}", path.display()))?;
+    match read_json::<Manifest>(&dir.join(MANIFEST), "font library manifest")? {
+        Some(mut m) => {
             m.fonts.truncate(MAX_FONTS);
             Ok(m)
         }
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Manifest { version: MANIFEST_VERSION, fonts: Vec::new() }),
-        Err(e) => Err(format!("cannot read {}: {e}", path.display())),
+        None => Ok(Manifest { version: MANIFEST_VERSION, fonts: Vec::new() }),
     }
 }
 
-fn write_atomic(path: &Path, bytes: &[u8]) -> std::result::Result<(), String> {
-    let tmp = path.with_extension(format!("tmp-{}", std::process::id()));
-    std::fs::write(&tmp, bytes).map_err(|e| format!("cannot write {}: {e}", tmp.display()))?;
-    std::fs::rename(&tmp, path).map_err(|e| {
-        let _ = std::fs::remove_file(&tmp);
-        format!("cannot write {}: {e}", path.display())
-    })
-}
-
 fn write_manifest(dir: &Path, m: &Manifest) -> std::result::Result<(), String> {
-    std::fs::create_dir_all(dir).map_err(|e| format!("cannot create {}: {e}", dir.display()))?;
-    let b = serde_json::to_vec_pretty(m).map_err(|e| e.to_string())?;
-    write_atomic(&dir.join(MANIFEST), &b)
-}
-
-fn sha256_hex(b: &[u8]) -> String {
-    Sha256::digest(b).iter().map(|x| format!("{x:02x}")).collect()
+    write_json(&dir.join(MANIFEST), m)
 }
 
 /// Register one library font's file with the text engine (once per process).
@@ -348,9 +326,7 @@ pub fn import(dir: &Path, path: &Path, license: License, replace: bool) -> std::
         faces: ins.faces.clone(),
         axes: ins.axes.clone(),
         license,
-        added: chrono::DateTime::from_timestamp(crate::autosave::unix_now(), 0)
-            .map(|d| d.to_rfc3339_opts(chrono::SecondsFormat::Secs, true))
-            .unwrap_or_default(),
+        added: now_rfc3339(),
         bytes: ins.bytes,
         sha256: ins.sha256.clone(),
     };
