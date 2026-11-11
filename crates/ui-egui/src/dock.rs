@@ -41,10 +41,12 @@ pub enum PanelKind {
     ReferenceMonitor,
     Timecode,
     ProjectNotes,
+    /// Creator Mode's media, music, text, captions, transitions and looks.
+    Assets,
 }
 
 impl PanelKind {
-    pub const ALL: [PanelKind; 28] = [
+    pub const ALL: [PanelKind; 29] = [
         PanelKind::Project,
         PanelKind::MediaBrowser,
         PanelKind::Libraries,
@@ -73,6 +75,7 @@ impl PanelKind {
         PanelKind::ReferenceMonitor,
         PanelKind::Timecode,
         PanelKind::ProjectNotes,
+        PanelKind::Assets,
     ];
     pub fn title(self) -> &'static str {
         match self {
@@ -104,6 +107,7 @@ impl PanelKind {
             PanelKind::ReferenceMonitor => "Reference Monitor",
             PanelKind::Timecode => "Timecode",
             PanelKind::ProjectNotes => "Project Notes",
+            PanelKind::Assets => "Assets",
         }
     }
     pub fn id(self) -> String {
@@ -145,8 +149,8 @@ fn vsplit(size: SplitSize, a: Node<PanelKind>, b: Node<PanelKind>) -> Node<Panel
     Node::Split { axis: SplitAxis::Vertical, size, first: Box::new(a), second: Box::new(b) }
 }
 
-pub const WORKSPACES: [&str; 10] =
-    ["Editing", "Assembly", "Color", "Effects", "Audio", "Captions and Graphics", "Vertical", "Learning", "Review", "All Panels"];
+pub const WORKSPACES: [&str; 11] =
+    ["Editing", "Assembly", "Color", "Effects", "Audio", "Captions and Graphics", "Vertical", "Learning", "Review", "All Panels", "Creator"];
 
 /// The user's workspaces file, beside `preferences.json` in the data directory.
 pub const WORKSPACES_FILE: &str = "workspaces.json";
@@ -493,6 +497,11 @@ fn workspace_root(name: &str) -> Node<PanelKind> {
             ),
             tabs(&[Program], 0),
         ),
+        // Creator Mode (M3A): Assets | Program | Properties over a full-width Timeline (with the
+        // Creator toolbar); no Tools panel or meters
+        "Creator" => {
+            vsplit(Ratio(0.55), hsplit(Ratio(0.26), tabs(&[Assets], 0), hsplit(Ratio(0.68), tabs(&[Program], 0), tabs(&[Properties], 0))), tabs(&[Timeline], 0))
+        }
         "All Panels" => vsplit(
             Ratio(0.5),
             hsplit(
@@ -852,7 +861,9 @@ mod tests {
         for w in WORKSPACES {
             let layout = workspace(w);
             let fixed = layout.root.as_ref().map(fixed_splits).unwrap_or_default();
-            assert_eq!(fixed, vec![SplitSize::FixedFirst(TOOLS_WIDTH), SplitSize::FixedSecond(METERS_WIDTH)], "{w}");
+            // Creator Mode (M3A) has neither: its toolbar replaces the Tools panel
+            let want = if w == "Creator" { vec![] } else { vec![SplitSize::FixedFirst(TOOLS_WIDTH), SplitSize::FixedSecond(METERS_WIDTH)] };
+            assert_eq!(fixed, want, "{w}");
         }
     }
 

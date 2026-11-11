@@ -13,6 +13,7 @@ mod clip_dialogs_ui;
 mod clip_mismatch_ui;
 mod clipboard_paste_ui;
 mod color_ui;
+mod creator_ui;
 mod delete_caption_tracks_ui;
 mod deselect_ui;
 mod dialog_buttons_ui;

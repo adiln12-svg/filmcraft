@@ -154,8 +154,14 @@ pub fn apply_preset(app: &mut FilmcraftApp, name: &str) -> bool {
 /// Full output path of the current settings.
 pub fn output_path(ex: &ExportUi) -> String {
     let name = if ex.file_name.trim().is_empty() { "Export" } else { ex.file_name.trim() };
+    // typed or inherited with an extension (`clip.mp4`): exactly one extension, the format's
+    let ext = ex.settings.extension();
+    let name = match name.rsplit_once('.') {
+        Some((stem, e)) if e.eq_ignore_ascii_case(ext) && !stem.trim().is_empty() => stem,
+        _ => filmcraft_engine::creator::strip_media_extension(name),
+    };
     let dir = filmcraft_engine::export_tools::expand_home(ex.location.trim());
-    let file = format!("{name}.{}", ex.settings.extension());
+    let file = format!("{name}.{ext}");
     if dir.is_empty() { file } else { std::path::Path::new(&dir).join(file).to_string_lossy().to_string() }
 }
 
@@ -173,7 +179,8 @@ pub fn export_params(app: &FilmcraftApp) -> Value {
 fn sync_sequence(app: &mut FilmcraftApp) {
     let Some(seq) = app.session.state.active_sequence else { return };
     if app.ui.export.for_sequence != Some(seq.0) || app.ui.export.file_name.is_empty() {
-        app.ui.export.file_name = app.session.project.item(seq).map(|i| i.name.clone()).unwrap_or_else(|| "Sequence".into());
+        let name = app.session.project.item(seq).map(|i| i.name.clone()).unwrap_or_else(|| "Sequence".into());
+        app.ui.export.file_name = filmcraft_engine::creator::strip_media_extension(&name).to_string();
         app.ui.export.for_sequence = Some(seq.0);
     }
     if app.ui.export.location.is_empty() {
@@ -244,5 +251,28 @@ mod location_tests {
         assert!(tail.len() <= MAX_LOCATION_DISPLAY_BYTES);
         assert!(tail.ends_with('終'));
         assert!(std::str::from_utf8(tail.as_bytes()).is_ok());
+    }
+}
+
+#[cfg(test)]
+mod output_name_tests {
+    use super::*;
+
+    /// M3A: a sequence named after its clip exported as `clip.mp4.mp4`.
+    #[test]
+    fn output_path_never_doubles_the_extension() {
+        let mut ex = ExportUi { location: "/out".into(), ..Default::default() };
+        for (typed, want) in [
+            ("phone_1.mp4", "phone_1.mp4"),
+            ("phone_1.MP4", "phone_1.mp4"),
+            ("phone_1", "phone_1.mp4"),
+            ("take.mov", "take.mp4"),
+            ("v1.2 final", "v1.2 final.mp4"),
+        ] {
+            ex.file_name = typed.into();
+            let p = output_path(&ex);
+            assert!(p.ends_with(want), "{typed} -> {p}");
+            assert!(!p.to_ascii_lowercase().ends_with(".mp4.mp4"), "{typed} -> {p}");
+        }
     }
 }

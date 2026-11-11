@@ -461,6 +461,8 @@ fn is_folder(x: &str) -> bool {
 /// `<default dir>/<sequence name>.<ext>`; `suffix` distinguishes several items.
 fn output_path(s: &Session, p: &Value, seq: ItemId, settings: &ExportSettings, suffix: Option<usize>) -> String {
     let name = s.project.item(seq).map(|i| i.name.clone()).unwrap_or_else(|| "Sequence".into());
+    // a sequence named after its clip (`phone_1.mp4`) must not give `phone_1.mp4.mov`
+    let name = crate::creator::strip_media_extension(&name).to_string();
     let base = match str_p(p, "path").map(expand_home) {
         Some(x) if is_folder(&x) => Path::new(&x).join(file_safe(&name)).to_string_lossy().to_string(),
         Some(x) => x,

@@ -132,6 +132,14 @@ pub const UI_COMMANDS: &[UiCommand] = &[
     uic!("window.fontLibrary", "Font Library…", ["Window"], None),
     uic!("window.paletteLibrary", "Palette Library…", ["Window"], None),
     uic!("window.brandKits", "Brand Kits…", ["Window"], None),
+    uic!("view.creatorMode", "Creator Mode", ["Window"], None),
+    uic!("creator.start", "Start Screen", ["File"], None),
+    uic!("creator.chooseClips", "New Video…", ["File", "New"], None),
+    uic!("creator.addMediaDialog", "Add Media to Video…", [], None),
+    uic!("creator.replaceDialog", "Replace Clip With File…", [], None),
+    uic!("creator.exportDialog", "Export Video…", ["File", "Export"], None),
+    uic!("creator.chooseExportFolder", "Choose Export Folder…", [], None),
+    uic!("creator.exportNow", "Export Video Now", [], None),
     uic!("brandKits.queueAsset", "Import Brand Asset…", [], None),
     uic!("fontLibrary.addFonts", "Add Fonts to Library…", [], None),
     uic!("tool.selection", "Selection Tool", [], Some("V")),
@@ -355,6 +363,9 @@ pub fn invoke_command(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, mut
         return r;
     }
     if let Some(r) = crate::panels::brand_kits::route(app, id, &params) {
+        return r;
+    }
+    if let Some(r) = crate::panels::creator::route(app, id, &params) {
         return r;
     }
     if let Some(r) = crate::panels::palette_library::route(app, id, &params) {
@@ -944,6 +955,7 @@ pub fn menu_items(app: &FilmcraftApp) -> Vec<MenuItem> {
     for it in &mut v {
         it.label = app.ui.language.tr(&it.label).to_string();
         match it.id.as_str() {
+            "view.creatorMode" => it.checked = Some(crate::panels::creator::is_on(app)),
             "app.language.english" => it.checked = Some(app.ui.language == crate::i18n::Language::En),
             "app.language.japanese" => it.checked = Some(app.ui.language == crate::i18n::Language::Ja),
             "app.language.spanish" => it.checked = Some(app.ui.language == crate::i18n::Language::Es),

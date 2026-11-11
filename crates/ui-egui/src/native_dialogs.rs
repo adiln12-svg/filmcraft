@@ -166,6 +166,9 @@ impl FilmcraftApp {
             return Err(tl!("A file dialog is already open").into());
         }
         let then = with_extension_check(&dialog, Box::new(then));
+        if let Some(paths) = self.queued_dialog_answer.take() {
+            return then(self, paths);
+        }
         if let Some(run) = self.hooks.run_dialog.as_mut() {
             self.native_dialog = Some(PendingDialog { answer: run(dialog), then });
             return Ok(json!({"dialog": "open"}));
@@ -188,7 +191,13 @@ impl FilmcraftApp {
             Ok(Value::Null)
         });
         let then = with_extension_check(&dialog, then);
+        let queued = self.queued_dialog_answer.take();
         let answer = match self.hooks.run_dialog.as_mut() {
+            _ if queued.is_some() => {
+                let (tx, rx) = std::sync::mpsc::channel();
+                let _ = tx.send(queued.unwrap_or_default());
+                rx
+            }
             Some(run) => run(dialog),
             None => {
                 let (tx, rx) = std::sync::mpsc::channel();

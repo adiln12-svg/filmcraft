@@ -500,7 +500,7 @@ fn start_drag(
             None
         }
         (_, Grab::Edge { clip, edge, kind, .. }) => Some(match kind {
-            EdgeKind::Trim => Drag::Trim { clip, edge, mode: filmcraft_edit::TrimMode::Regular, delta: Tick::ZERO, from: t, linked: !mods.alt },
+            EdgeKind::Trim => selection_trim(app, seq, clip, edge, t, !mods.alt),
             EdgeKind::Ripple => Drag::Trim { clip, edge, mode: filmcraft_edit::TrimMode::Ripple, delta: Tick::ZERO, from: t, linked: !mods.alt },
             EdgeKind::Roll { left, right } => Drag::Roll { left, right, delta: Tick::ZERO, from: t },
             EdgeKind::Stretch => Drag::Stretch { clip, edge, delta: Tick::ZERO, from: t, linked: !mods.alt },
@@ -833,8 +833,18 @@ fn commit_drag(app: &mut FilmcraftApp, ctx: &egui::Context, resp: &egui::Respons
                         .collect();
                     // Option held while dropping copies (Premiere: Option-drag duplicates)
                     let copying = copy || mods.alt;
-                    let captions = track_select_drag_captions(app, copying, mods.command);
-                    Some(app.session.execute("timeline.move", json!({"moves": moves, "insert": mods.command, "linked": false, "copy": copying, "captions": captions})))
+                    match creator_rearrange(app, seq, &clips, offset, track_delta, new_track.is_some() || copying) {
+                        Some(r) => Some(r),
+                        None => {
+                            let captions = track_select_drag_captions(app, copying, mods.command);
+                            Some(app.session.execute("timeline.move", json!({"moves": moves, "insert": mods.command, "linked": false, "copy": copying, "captions": captions})))
+                        }
+                    }
+                }
+                Drag::Trim { clip, edge, mode: filmcraft_edit::TrimMode::Ripple, delta, .. }
+                    if delta != Tick::ZERO && creator_ripples(app, seq, clip) =>
+                {
+                    Some(app.session.execute("creator.trim", json!({"clip": clip.0, "edge": if edge == filmcraft_edit::Edge::In {"in"} else {"out"}, "delta": delta.0})))
                 }
                 Drag::Trim { clip, edge, mode, delta, linked, .. } if delta != Tick::ZERO => Some(app.session.execute(
                     "timeline.trim",
@@ -876,6 +886,42 @@ fn commit_drag(app: &mut FilmcraftApp, ctx: &egui::Context, resp: &egui::Respons
             app.tl.drag = None;
         }
     }
+}
+
+/// A Selection-tool trim: regular, except in Creator Mode where a main-track clip's trim closes
+/// (or opens) the gap, as beginners expect.
+fn selection_trim(app: &FilmcraftApp, seq: &Sequence, clip: ClipId, edge: filmcraft_edit::Edge, from: Tick, linked: bool) -> Drag {
+    let mode = if creator_ripples(app, seq, clip) { filmcraft_edit::TrimMode::Ripple } else { filmcraft_edit::TrimMode::Regular };
+    Drag::Trim { clip, edge, mode, delta: Tick::ZERO, from, linked }
+}
+
+/// Creator Mode (M3A): trims of main-track clips ripple (the gap closes, as beginners expect).
+fn creator_ripples(app: &FilmcraftApp, seq: &Sequence, clip: ClipId) -> bool {
+    crate::panels::creator::is_on(app) && seq.video_tracks.first().is_some_and(|tr| tr.items.iter().any(|i| i.id == clip))
+}
+
+/// Creator Mode (M3A): a clip dragged along its own main track is rearranged (it goes between
+/// the clips where it is dropped and the gap it leaves closes) instead of overwriting.
+fn creator_rearrange(
+    app: &mut FilmcraftApp,
+    seq: &Sequence,
+    clips: &[ClipId],
+    offset: Tick,
+    track_delta: i32,
+    other: bool,
+) -> Option<Result<serde_json::Value, filmcraft_engine::EngineError>> {
+    if !crate::panels::creator::is_on(app) || track_delta != 0 || other || offset == Tick::ZERO {
+        return None;
+    }
+    let main = seq.video_tracks.first()?;
+    let mut picked = clips.iter().filter(|c| main.items.iter().any(|i| i.id == **c));
+    let clip = *picked.next()?;
+    if picked.next().is_some() {
+        return None;
+    }
+    let start = main.items.iter().find(|i| i.id == clip)?.start;
+    let at = (start + offset).max(Tick::ZERO);
+    Some(app.session.execute("creator.moveClip", json!({"clip": clip.0, "time": at.0})))
 }
 
 /// #1887: the rows a Project drop fills, with their automation ids: the picture from the video

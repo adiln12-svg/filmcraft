@@ -211,6 +211,10 @@ pub struct FilmcraftApp {
     pub file_dialogs: panels::file_dialogs::FileDialogState,
     /// The native file dialog the host is showing ([`Self::pick`]).
     native_dialog: Option<native_dialogs::PendingDialog>,
+    /// The control channel's stand-in for a person answering the next file dialog
+    /// (`ui.dialog.answer`): the next [`Self::pick`] / [`Self::pick_ui`] gets these paths instead
+    /// of showing the host's dialog.
+    pub(crate) queued_dialog_answer: Option<Vec<String>>,
     /// A save dialog's answer waiting for Replace or Cancel ([`native_dialogs`]).
     overwrite_prompt: Option<native_dialogs::PendingOverwrite>,
     pub auto: automation::Registry,

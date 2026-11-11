@@ -140,7 +140,13 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, p: PanelKind, rect: Rect)
         PanelKind::Program if !app.session.state.edit_points.is_empty() => trim_monitor::show(app, ui, rect),
         PanelKind::Program => monitor::show(app, ui, rect, monitor::Which::Program),
         PanelKind::Source => monitor::show(app, ui, rect, monitor::Which::Source),
+        PanelKind::Timeline if creator::is_on(app) && rect.height() > creator::TOOLBAR_H * 2.0 => {
+            let (bar, rest) = rect.split_top_bottom_at_y(rect.min.y + creator::TOOLBAR_H);
+            creator::toolbar(app, ui, bar);
+            timeline::show(app, ui, rest);
+        }
         PanelKind::Timeline => timeline::show(app, ui, rect),
+        PanelKind::Assets => creator::assets_panel(app, ui, rect),
         PanelKind::Project => project::show(app, ui, rect),
         PanelKind::Tools => tools::show(app, ui, rect),
         PanelKind::Effects => effects::show(app, ui, rect),
@@ -487,6 +493,7 @@ pub mod custom_colors;
 pub mod marker_properties;
 
 pub mod brand_kits;
+pub mod creator;
 pub mod font_library;
 pub mod markers_panel;
 pub mod palette_library;

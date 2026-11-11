@@ -522,6 +522,27 @@ pub fn handle(app: &mut FilmcraftApp, ctx: &egui::Context, req: &ControlRequest)
             ok(serde_json::to_value(app.auto.query(prefix)).unwrap_or_default())
         }
         "ui.set" => handle_ui_set(app, ctx, p),
+        // stand-ins for what a person does outside the window: answer the next file dialog,
+        // drop files from the file manager
+        "ui.dialog.answer" => {
+            let paths: Vec<String> =
+                p.get("paths").and_then(Value::as_array).map(|a| a.iter().filter_map(|v| v.as_str().map(str::to_string)).collect()).unwrap_or_default();
+            app.queued_dialog_answer = Some(paths);
+            ok(json!({"queued": true}))
+        }
+        "ui.dropFiles" => {
+            let paths: Vec<String> =
+                p.get("paths").and_then(Value::as_array).map(|a| a.iter().filter_map(|v| v.as_str().map(str::to_string)).collect()).unwrap_or_default();
+            if paths.is_empty() {
+                return err("need `paths`");
+            }
+            let pointer = match (p.get("x").and_then(Value::as_f64), p.get("y").and_then(Value::as_f64)) {
+                (Some(x), Some(y)) => Some((egui::pos2(x as f32, y as f32), egui::ViewportId::ROOT)),
+                _ => None,
+            };
+            app.import_paths(ctx, paths, pointer);
+            ok(json!({"mode": format!("{:?}", app.ui.mode), "workspace": app.ui.workspace, "status": app.ui.status}))
+        }
         "ui.panel.show" | "ui.panel.close" => {
             let Some(panel) = s("panel").and_then(PanelKind::from_name) else { return err("unknown `panel`") };
             if req.method == "ui.panel.show" {

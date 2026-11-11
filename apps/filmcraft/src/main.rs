@@ -240,6 +240,7 @@ fn app_creator(launch: Launch, graphics: graphics::GraphicsStart, created: Arc<A
         // voice-over recording reads the microphone through cpal
         session.voiceover.input = Some(Box::new(audio_in::CpalIn::new(&session.prefs.audio_hardware.device_class)));
         let (project, media) = args::project_and_media(&files);
+        let mut start_screen = false;
         if let Some(p) = project {
             if let Err(e) = session.execute("file.open", json!({"path": p})) {
                 log::error!("{e}");
@@ -253,11 +254,13 @@ fn app_creator(launch: Launch, graphics: graphics::GraphicsStart, created: Arc<A
                         log::error!("{e}");
                     }
                 }
-                None => {
-                    let _ = session.execute("file.openDemoProject", json!({}));
-                }
+                // nothing to reopen: an empty project on the Start screen (M3A), not the demo
+                None => start_screen = true,
             }
-        } else if !startup_flag && session.prefs.general.at_startup == "emptyProject" {
+        } else if !startup_flag && matches!(session.prefs.general.at_startup.as_str(), "emptyProject" | "showHome") {
+            // Settings ▸ General ▸ At Startup ▸ Show Home (the default): the Start screen with an
+            // empty project (M3A); `--demo` still opens the demo project
+            start_screen = true;
         } else if demo {
             let _ = session.execute("file.openDemoProject", json!({}));
         }
@@ -272,6 +275,9 @@ fn app_creator(launch: Launch, graphics: graphics::GraphicsStart, created: Arc<A
             }
         }
         let mut app = FilmcraftApp::new(session);
+        if start_screen && media.is_empty() {
+            app.ui.mode = filmcraft_ui_egui::state::Mode::Import;
+        }
         app.set_startup_update_check(true);
         app.graphics_notice = notice;
         if recover == Some(false) {

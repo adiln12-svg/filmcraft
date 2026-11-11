@@ -59,6 +59,8 @@ Methods (handlers in `crates/ui-egui/src/control.rs`):
 | `ui.key` / `ui.type` | `{key}` (`Cmd+K`, `Space`…; off macOS `Ctrl+K` is the same key) / `{text}` | keyboard |
 | `ui.timeline.hit` / `ui.timeline.locate` | `{x,y,modifiers?}` / `{clip, edge?}` | timeline hit-testing. `hit` reports a clip's `edge` (`In`/`Out`) within 7 px of it (a third of a narrow clip); just left of a cut that is the left clip's Out, from the cut rightwards the right clip's In. `kind` is the trim a press of the current tool with `modifiers` starts there (`trim`, `ripple`, `roll`, `rateStretch`, `remix`), `volume` on an audio clip's Volume line (Selection and Pen tools), or null. On the ruler it reports `ruler`, or `workArea` with the bar's `edge` on the work area bar |
 | `ui.playback` | `{action: play|stop|toggle, speed?}` | |
+| `ui.dropFiles` | `{paths, x?, y?}` | files dropped on the window from the file manager, as a drop at `x,y` (points) would be: file-name order; on the Start screen a new video, in Creator Mode added at the end of the video ([creator-mode.md](creator-mode.md)) |
+| `ui.dialog.answer` | `{paths}` | stand-in for a person answering the next file dialog (open, folder, save): it gets `paths` (`[]` = cancelled) instead of showing the host's dialog |
 | `ui.screenshot` | `{path?, panel?}` | PNG of the window or one panel; fails after 10 s when no frame is presented (window hidden, display asleep) |
 | `ui.resize`, `app.quit` | `{width,height}` / `{}` | resize or close the native window; `app.quit` quits without the save prompt (unsaved changes stay in the recovery journal), while the command `app.quit` asks first |
 | `ui.focus` | `{}` / `{id}` | empty parameters activate the native window; a widget ID requests egui focus without OS activation |

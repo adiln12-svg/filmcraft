@@ -43,7 +43,7 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
     }
     x = home.max.x + 16.0;
     // Mode tabs (14 pt; active = primary text with a 2 pt underline under the label)
-    for (m, label, shown) in [(Mode::Import, "Import", tl!("Import")), (Mode::Edit, "Edit", tl!("Edit")), (Mode::Export, "Export", tl!("Export"))] {
+    for (m, label, shown) in [(Mode::Import, "Import", tl!("Home")), (Mode::Edit, "Edit", tl!("Edit")), (Mode::Export, "Export", tl!("Export"))] {
         let active = app.ui.mode == m;
         let galley = p.layout_no_wrap(shown.to_string(), Tokens::ui(14.0), if active { t.tab_text_active } else { t.tab_text });
         let r = Rect::from_min_size(pos2(x - 6.0, rect.min.y + 6.0), vec2(galley.size().x + 12.0, rect.height() - 12.0));
@@ -60,6 +60,7 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
         }
         x += gw + 24.0;
     }
+    x = creator_switch(app, ui, x, rect);
     let mut left_end = x;
     // In-window menus when there is no native menu bar.
     if app.ui.show_menu_bar {
@@ -202,6 +203,42 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
             ui.ctx().data_mut(|d| d.insert_temp(popup_id, false));
         }
     }
+}
+
+/// The Creator / Pro switch (M3A): the same project and timeline in the simple Creator workspace
+/// or the professional one used before. Returns where the next item starts.
+fn creator_switch(app: &mut FilmcraftApp, ui: &mut egui::Ui, x: f32, rect: Rect) -> f32 {
+    let t = app.tokens;
+    let on = crate::panels::creator::is_on(app);
+    let mut x = x;
+    let mut pick = None;
+    for (creator, id, label, tip) in [
+        (true, "creator", tl!("Creator"), tl!("Simple editing for short videos")),
+        (false, "pro", tl!("Pro"), tl!("Every professional panel and tool (same project and timeline)")),
+    ] {
+        let g = ui.painter().layout_no_wrap(label.to_string(), Tokens::ui(12.0), t.text);
+        let r = Rect::from_min_size(pos2(x, rect.center().y - 11.0), vec2(g.size().x + 18.0, 22.0));
+        x = r.max.x;
+        let resp = ui.interact(r, egui::Id::unique(("hdr-creator", id)), Sense::click()).on_hover_text(tip);
+        app.auto.add(&format!("header.{id}Mode"), r, label);
+        let active = on == creator;
+        let bg = if active {
+            t.accent
+        } else if resp.hovered() {
+            t.hover
+        } else {
+            t.control_surface
+        };
+        ui.painter().rect_filled(r, 11.0, bg);
+        ui.painter().galley(pos2(r.min.x + 9.0, r.center().y - g.size().y / 2.0), g, if active { Color32::WHITE } else { t.text_dim });
+        if resp.clicked() && !active {
+            pick = Some(creator);
+        }
+    }
+    if let Some(creator) = pick {
+        if creator { crate::panels::creator::enter(app) } else { crate::panels::creator::leave(app) }
+    }
+    x + 16.0
 }
 
 #[cfg(test)]

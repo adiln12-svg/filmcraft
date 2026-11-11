@@ -155,6 +155,12 @@ impl FilmcraftApp {
             } else {
                 json!({})
             };
+            // Creator Mode: Delete removes the clip and closes the gap it leaves (M3A)
+            let id = if id == "edit.clear" && crate::panels::creator::is_on(self) && !self.session.state.selection.is_empty() {
+                "creator.delete".to_string()
+            } else {
+                id
+            };
             if let Err(e) = menus::invoke(self, ctx, &id, params) {
                 self.ui.status = e;
             }

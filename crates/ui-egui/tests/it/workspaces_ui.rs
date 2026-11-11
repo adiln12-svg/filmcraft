@@ -183,6 +183,7 @@ fn save_switch_reset_rename_delete_and_restart() {
             "Audio",
             "Captions and Graphics",
             "Color",
+            "Creator",
             "Cutting",
             "Editing",
             "Effects",

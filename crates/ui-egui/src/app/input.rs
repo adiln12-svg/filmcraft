@@ -37,12 +37,23 @@ impl FilmcraftApp {
     /// file opens instead, as File ▸ Open would (asking first about unsaved changes, #3843).
     fn import_dropped(&mut self, ctx: &egui::Context, dropped: &[egui::DroppedFileHandle], pointer: Option<(egui::Pos2, egui::ViewportId)>) {
         let paths: Vec<String> = dropped.iter().map(|f| f.path()).filter(|p| p.exists()).map(|p| p.to_string_lossy().to_string()).collect();
+        self.import_paths(ctx, paths, pointer);
+    }
+
+    /// Files dropped on the window (or `ui.dropFiles`), in file-name order (a file manager hands
+    /// a drop over in no particular order). On the Start screen they start a new video; in
+    /// Creator Mode they are added at the end of the video, or at the pointer over the Timeline.
+    pub(crate) fn import_paths(&mut self, ctx: &egui::Context, paths: Vec<String>, pointer: Option<(egui::Pos2, egui::ViewportId)>) {
+        let paths = filmcraft_engine::creator::ordered_paths(&paths, false);
         if let Some(project) = paths.iter().find(|p| is_project_file(p)) {
             // one project is open at a time: the rest of the drop is not imported into either
             let _ = crate::menus::invoke(self, ctx, "file.open", json!({"path": project}));
             return;
         }
         if paths.is_empty() {
+            return;
+        }
+        if crate::panels::creator::take_drop(self, &paths, pointer.map(|p| p.0)) {
             return;
         }
         let imported = self.session.execute("file.import", json!({"paths": paths, "bin": self.import_bin().0}));

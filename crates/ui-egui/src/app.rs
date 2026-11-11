@@ -46,6 +46,7 @@ impl FilmcraftApp {
             updates_rt: Default::default(),
             file_dialogs: Default::default(),
             native_dialog: None,
+            queued_dialog_answer: None,
             overwrite_prompt: None,
             auto: Default::default(),
             ime_replacement_epoch: 0,
@@ -293,6 +294,10 @@ impl FilmcraftApp {
                     self.timeline_view_of = None;
                     self.ui.dock.restore_timeline();
                     let _ = self.apply_dock(craft_ui::docking::Action::Activate { panel: PanelKind::Timeline });
+                    // a timeline made from the Start / Import page is edited at once (M3A)
+                    if self.ui.mode == crate::state::Mode::Import {
+                        self.ui.mode = crate::state::Mode::Edit;
+                    }
                 }
                 filmcraft_engine::Event::OpenSource(_) => {
                     // a closed Source panel reopens, and another panel's maximize would hide it
