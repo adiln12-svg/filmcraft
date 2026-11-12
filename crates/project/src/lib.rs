@@ -83,6 +83,24 @@ id_type!(ClipId);
 id_type!(TransitionId);
 id_type!(MarkerId);
 
+/// Work the person protected from Claude (M3B): clips (and captions) and tracks (video, audio,
+/// caption) an agent must not change without the person's explicit permission. The person's own
+/// edits are not restricted. Saved with the project (schema v19).
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Protection {
+    #[serde(default, skip_serializing_if = "std::collections::BTreeSet::is_empty")]
+    pub clips: std::collections::BTreeSet<ClipId>,
+    #[serde(default, skip_serializing_if = "std::collections::BTreeSet::is_empty")]
+    pub tracks: std::collections::BTreeSet<TrackId>,
+}
+
+impl Protection {
+    pub fn is_empty(&self) -> bool {
+        self.clips.is_empty() && self.tracks.is_empty()
+    }
+}
+
 /// A project's reference to one approved version of a client brand kit (`kit_…@N`), with the
 /// fingerprint of that version so a changed or missing kit is detected instead of silently used.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -141,6 +159,9 @@ pub struct Project {
     /// Schema v18.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub brand: Option<BrandPin>,
+    /// Clips and tracks protected from Claude (M3B). Schema v19.
+    #[serde(default, skip_serializing_if = "Protection::is_empty")]
+    pub protection: Protection,
 }
 
 impl Default for Project {
@@ -171,6 +192,7 @@ impl Project {
             narrations: BTreeMap::new(),
             notes: String::new(),
             brand: None,
+            protection: Protection::default(),
         }
     }
 

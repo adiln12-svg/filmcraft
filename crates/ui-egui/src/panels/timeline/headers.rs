@@ -139,6 +139,7 @@ pub(super) fn draw_headers(app: &mut FilmcraftApp, ui: &mut egui::Ui, seq: &Sequ
             // diagonal hatch over locked lanes is drawn by the lane painter; here a subtle tint
             p.rect_filled(Rect::from_min_max(pos2(hrect.max.x - 4.0, hrect.min.y), hrect.max), 0.0, t.pressed);
         }
+        protected_badge(app, &p, hrect, visible, r.track, &label);
         // 3. target
         let targeted = tg.targeted.contains(&r.track);
         let trr = btn_rect(61.0);
@@ -208,6 +209,18 @@ pub(super) fn draw_headers(app: &mut FilmcraftApp, ui: &mut egui::Ui, seq: &Sequ
     if let Some(a) = vo_action {
         crate::panels::voiceover::run(app, &ui.ctx().clone(), a);
     }
+}
+
+/// Protected from Claude (M3B): a gold lock at the header's top-right.
+fn protected_badge(app: &mut FilmcraftApp, p: &egui::Painter, hrect: Rect, visible: Rect, track: filmcraft_engine::project::TrackId, label: &str) {
+    if !app.session.project.protection.tracks.contains(&track) {
+        return;
+    }
+    let pr = Rect::from_center_size(pos2(hrect.max.x - 12.0, hrect.min.y + 10.0), vec2(12.0, 12.0));
+    if visible.contains_rect(pr) {
+        crate::icons::paint(p, pr, Icon::Lock, egui::Color32::from_rgb(255, 214, 102));
+    }
+    app.auto.add(&format!("timeline.track.{label}.protected"), pr, "Protected from Claude");
 }
 
 /// A track header's upper line: sync-lock, then output enable for a video track, or mute,

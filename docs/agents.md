@@ -96,6 +96,11 @@ claude mcp add filmcraft -- filmcraft-cli mcp
 Typical loop: `project_inspect` / `sequence_inspect` → get ids → `command_run` → `render_frame` or
 `ui_screenshot` → look at the result → `edit.undo` if it's wrong.
 
+**Editing a person's project** ([co-editing.md](co-editing.md)): start with `agent.status` (note
+`projectRevision`), make related edits as one `agent.transaction {label, expectRevision, commands}`,
+and read `CONFLICT` (the person edited meanwhile: look again) and `PROTECTED` (ask with
+`agent.requestAuthorization`, never work around it) as answers, not as errors to retry blindly.
+
 ### Conventions
 
 The server follows a few conventions that make it predictable for agents. They are not

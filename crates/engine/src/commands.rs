@@ -1484,6 +1484,7 @@ fn build() -> Vec<CommandSpec> {
             s.revision += 1;
             s.saved_revision = s.revision;
             s.events.push(crate::Event::ProjectChanged { revision: s.revision });
+            crate::collab::on_installed(s);
             // the project as `project_inspect` names it (#1545: an agent needs no extra round trip)
             Ok(json!({"name": name, "revision": s.revision}))
         }),
@@ -1505,6 +1506,7 @@ fn build() -> Vec<CommandSpec> {
             s.saved_revision = s.revision;
             s.events.push(crate::Event::ProjectChanged { revision: s.revision });
             s.events.push(crate::Event::OpenSequence(seq));
+            crate::collab::on_installed(s);
             Ok(json!({"sequence": seq.0}))
         }),
         cmd!(
@@ -1841,8 +1843,9 @@ fn build() -> Vec<CommandSpec> {
         cmd!("file.importAaf", "Import AAF…", [], None, r#"{"path":str,"bin":binId?}"#, always, |s, p| {
             crate::aaf_omf::import_document(s, p, "file.importAaf")
         }),
-        cmd!("file.save", "Save", ["File"], Some("Cmd+S"), r#"{"path":str?}"#, always, |s, p| {
+        cmd!("file.save", "Save", ["File"], Some("Cmd+S"), r#"{"path":str?,"force":bool? (overwrite a file another program changed)}"#, always, |s, p| {
             let path = str_p(p, "path").map(str::to_string).or_else(|| s.path.clone()).ok_or_else(|| bad("file.save", "no path (use Save As)"))?;
+            s.collab.save_force = bool_p(p, "force").unwrap_or(false);
             write_project(s, &path, true)
         }),
         cmd!("file.saveAs", "Save As…", ["File"], Some("Cmd+Shift+S"), r#"{"path":str}"#, always, |s, p| {
@@ -4060,6 +4063,7 @@ fn build() -> Vec<CommandSpec> {
     v.extend(crate::palette_library::commands());
     v.extend(crate::brand_kits::commands());
     v.extend(crate::creator::commands());
+    v.extend(crate::collab::commands());
     // Edit ▸ Label ▸ <colour>, Paste Attributes, subclips, Video / Audio Options, Replace With Clip…
     // and their menu order
     crate::clip_ops::apply_layout(&mut v);
@@ -5166,6 +5170,10 @@ fn write_project(s: &mut Session, path: &str, adopt: bool) -> Result<Value> {
     // what is open (sequence tabs, how each is shown) goes into the file beside the project
     let view = s.project_view();
     let bytes = filmcraft_format::encode_with_view(&s.project, Some(&view), false);
+    if adopt {
+        crate::collab::check_disk(s, path)?;
+    }
+    let old_key = crate::collab::current_key(s);
     let mut backup = None;
     if adopt && s.path.as_deref() == Some(path) && s.loaded_schema < filmcraft_format::SCHEMA_VERSION {
         let b = schema_backup_path(path, s.loaded_schema);
@@ -5183,6 +5191,8 @@ fn write_project(s: &mut Session, path: &str, adopt: bool) -> Result<Value> {
         s.note_recent_project();
         s.saved_revision = s.revision;
         s.loaded_schema = filmcraft_format::SCHEMA_VERSION;
+        crate::collab::note_disk(s, &bytes);
+        crate::collab::on_saved(s, old_key);
     }
     Ok(json!({"path": path, "bytes": bytes.len(), "ms": t0.elapsed().as_secs_f64() * 1000.0, "backup": backup}))
 }
@@ -5220,6 +5230,7 @@ pub(crate) fn install_project(s: &mut Session, proj: filmcraft_project::Project,
     s.loaded_schema = filmcraft_format::SCHEMA_VERSION;
     s.events.push(crate::Event::ProjectChanged { revision: s.revision });
     crate::project_tools::warn_untrusted_scratch(s);
+    crate::collab::on_installed(s);
 }
 
 fn open_project(s: &mut Session, path: &str) -> Result<Value> {
@@ -5228,6 +5239,7 @@ fn open_project(s: &mut Session, path: &str) -> Result<Value> {
     let (from, migrated) = (loaded.schema_version, loaded.migrated());
     crate::masks::discard_jobs(s);
     install_project(s, loaded.project, Some(path.to_string()), true);
+    crate::collab::note_disk(s, &bytes);
     if let Some(view) = loaded.view.filter(|_| s.prefs.timeline.restore_open_sequences) {
         s.restore_project_view(view);
     }

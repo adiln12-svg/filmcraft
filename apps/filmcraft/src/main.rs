@@ -275,6 +275,8 @@ fn app_creator(launch: Launch, graphics: graphics::GraphicsStart, created: Arc<A
             }
         }
         let mut app = FilmcraftApp::new(session);
+        // input injected through the control channel is an agent's (M3B)
+        app.synthetic_input_is_agent = control_port.is_some();
         if start_screen && media.is_empty() {
             app.ui.mode = filmcraft_ui_egui::state::Mode::Import;
         }

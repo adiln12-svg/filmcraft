@@ -43,10 +43,12 @@ pub enum PanelKind {
     ProjectNotes,
     /// Creator Mode's media, music, text, captions, transitions and looks.
     Assets,
+    /// Claude's changes, project versions and Claude's requests (M3B).
+    Changes,
 }
 
 impl PanelKind {
-    pub const ALL: [PanelKind; 29] = [
+    pub const ALL: [PanelKind; 30] = [
         PanelKind::Project,
         PanelKind::MediaBrowser,
         PanelKind::Libraries,
@@ -76,6 +78,7 @@ impl PanelKind {
         PanelKind::Timecode,
         PanelKind::ProjectNotes,
         PanelKind::Assets,
+        PanelKind::Changes,
     ];
     pub fn title(self) -> &'static str {
         match self {
@@ -108,6 +111,7 @@ impl PanelKind {
             PanelKind::Timecode => "Timecode",
             PanelKind::ProjectNotes => "Project Notes",
             PanelKind::Assets => "Assets",
+            PanelKind::Changes => "Changes",
         }
     }
     pub fn id(self) -> String {
@@ -499,9 +503,11 @@ fn workspace_root(name: &str) -> Node<PanelKind> {
         ),
         // Creator Mode (M3A): Assets | Program | Properties over a full-width Timeline (with the
         // Creator toolbar); no Tools panel or meters
-        "Creator" => {
-            vsplit(Ratio(0.55), hsplit(Ratio(0.26), tabs(&[Assets], 0), hsplit(Ratio(0.68), tabs(&[Program], 0), tabs(&[Properties], 0))), tabs(&[Timeline], 0))
-        }
+        "Creator" => vsplit(
+            Ratio(0.55),
+            hsplit(Ratio(0.26), tabs(&[Assets], 0), hsplit(Ratio(0.68), tabs(&[Program], 0), tabs(&[Properties, Changes], 0))),
+            tabs(&[Timeline], 0),
+        ),
         "All Panels" => vsplit(
             Ratio(0.5),
             hsplit(

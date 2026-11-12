@@ -47,6 +47,7 @@ impl FilmcraftApp {
             file_dialogs: Default::default(),
             native_dialog: None,
             queued_dialog_answer: None,
+            synthetic_input_is_agent: false,
             overwrite_prompt: None,
             auto: Default::default(),
             ime_replacement_epoch: 0,
@@ -371,10 +372,16 @@ impl FilmcraftApp {
         self.timeline_still = if self.ui.timeline.animating() { 0 } else { self.timeline_still.saturating_add(1) };
         // This is a real UI pass: the one synthetic step offered to raw_input_hook has been fed to
         // egui now. A hidden logic tick never reaches this point and keeps it pending.
+        // a pass driven by input the control channel injected is Claude's (M3B): its edits are
+        // checked against the person's protections like any agent command
+        let agent_pass = self.synthetic_input_is_agent && self.synthetic_pending_step.is_some();
         self.synthetic_pending_step = None;
         self.synthetic_step_offered = false;
         self.synthetic_modifiers_offered = false;
         let first_pass = ctx.current_pass_index() == 0;
+        if agent_pass {
+            self.session.collab.actor = filmcraft_engine::collab::Actor::Agent;
+        }
         if first_pass {
             // Setup and fresh-input handling happen where `RawInput::events` are available. Pass 1+
             // has no new events and must not re-run a click, shortcut or drop.
@@ -399,6 +406,7 @@ impl FilmcraftApp {
             self.ui_error = Some(crash::take_last().unwrap_or_else(|| "unknown error".into()));
             self.playback.playing = false;
         }
+        self.session.collab.actor = filmcraft_engine::collab::Actor::User;
         if !ctx.will_discard() {
             self.cancel_value_drag(&ctx);
         }

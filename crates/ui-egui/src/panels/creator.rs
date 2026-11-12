@@ -479,7 +479,7 @@ pub fn toolbar(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
     let can_undo = !app.session.history.undo.is_empty();
     let can_redo = !app.session.history.redo.is_empty();
     // id, label, tooltip, command, params, enabled, ui command
-    let buttons: [(&str, &str, &str, &'static str, Value, bool, bool); 10] = [
+    let buttons: [(&str, &str, &str, &'static str, Value, bool, bool); 11] = [
         ("undo", tl!("Undo"), tl!("Undo the last change"), "edit.undo", json!({}), can_undo, false),
         ("redo", tl!("Redo"), tl!("Redo"), "edit.redo", json!({}), can_redo, false),
         ("split", tl!("Split"), tl!("Cut the clip in two at the playhead"), "sequence.addEdit", json!({}), has_seq, false),
@@ -495,6 +495,15 @@ pub fn toolbar(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
         ("trimEnd", tl!("Trim end"), tl!("Remove the part of the clip after the playhead"), "creator.trimToPlayhead", json!({"side": "end"}), has_seq, false),
         ("delete", tl!("Delete"), tl!("Delete the selected clips and close the gap"), "creator.delete", json!({}), sel, false),
         ("replace", tl!("Replace…"), tl!("Replace the selected clip with another file"), "creator.replaceDialog", json!({}), sel, true),
+        (
+            "protect",
+            tl!("Protect"),
+            tl!("Protect the selected clips from Claude (you can still edit them); again to remove"),
+            "protect.toggle",
+            json!({}),
+            sel,
+            false,
+        ),
         ("addMedia", tl!("+ Media"), tl!("Add clips at the end of the video"), "creator.addMediaDialog", json!({}), true, true),
         ("addText", tl!("+ Text"), tl!("Add a title at the playhead"), "creator.addTitle", json!({"text": tl!("Your title"), "seconds": 3}), has_seq, false),
         ("pro", tl!("Pro"), tl!("Switch to the professional workspace (same project and timeline)"), "view.creatorMode", json!({"on": false}), true, true),

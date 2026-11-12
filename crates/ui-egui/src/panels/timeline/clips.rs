@@ -314,6 +314,12 @@ pub(super) fn draw_clip(
         p.rect_stroke(body.shrink(1.0), 0.0, Stroke::new(1.0, Color32::BLACK), StrokeKind::Inside);
         p.rect_stroke(body, 0.0, Stroke::new(2.0, t.clip_selected_border), StrokeKind::Inside);
     }
+    // protected from Claude (M3B): a lock in the top-right corner
+    if w > 22.0 && app.session.project.protection.clips.contains(&it.id) {
+        let r = Rect::from_min_size(pos2(body.max.x - 17.0, body.min.y + 2.0), vec2(14.0, 14.0));
+        clip_p.rect_filled(r.expand(1.0), 3.0, Color32::from_black_alpha(160));
+        crate::icons::paint(&clip_p, r.shrink(1.0), crate::icons::Icon::Lock, Color32::from_rgb(255, 214, 102));
+    }
 }
 
 /// 45° hatching over `r` (transitions, and the empty end of a nested sequence clip).

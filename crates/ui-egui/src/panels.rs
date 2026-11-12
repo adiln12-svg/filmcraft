@@ -147,6 +147,7 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, p: PanelKind, rect: Rect)
         }
         PanelKind::Timeline => timeline::show(app, ui, rect),
         PanelKind::Assets => creator::assets_panel(app, ui, rect),
+        PanelKind::Changes => changes::panel(app, ui, rect),
         PanelKind::Project => project::show(app, ui, rect),
         PanelKind::Tools => tools::show(app, ui, rect),
         PanelKind::Effects => effects::show(app, ui, rect),
@@ -493,6 +494,7 @@ pub mod custom_colors;
 pub mod marker_properties;
 
 pub mod brand_kits;
+pub mod changes;
 pub mod creator;
 pub mod font_library;
 pub mod markers_panel;

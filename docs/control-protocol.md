@@ -46,7 +46,7 @@ Methods (handlers in `crates/ui-egui/src/control.rs`):
 
 | Method | Params | |
 |---|---|---|
-| `engine.execute` / `ui.menu.invoke` | `{command, params}` | any engine or UI command id |
+| `engine.execute` / `ui.menu.invoke` | `{command, params, expectRevision?, authorization?}` | any engine or UI command id, run as Claude ([co-editing.md](co-editing.md)): protections apply, a stale `expectRevision` is refused (`CONFLICT`); the reply carries `projectRevision` |
 | `engine.commands` / `ui.menu.list` | – | command registry / menu tree |
 | `ui.inspect` | – | UI state (tool, workspace, dock, timeline view, playback, fps…) |
 | `ui.docking` | – | the panel layout (craft-ui `Layout`), the focused and maximized panel, and `hitRects`: each docking gesture source drawn last frame (`{hit, rect}`) |

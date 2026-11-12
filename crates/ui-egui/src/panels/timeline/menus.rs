@@ -66,6 +66,7 @@ pub(crate) const CLIP_MENU: &[&[(&str, &str)]] = &[
         ("Fill frame", "clip.fillFrame"),
     ],
     &[("Reveal in Project", "clip.revealInProject"), ("Join Through Edits", "sequence.joinThroughEdits")],
+    &[("Protect from Claude", "protect.toggle")],
 ];
 
 /// The cut right-clicked on a track (#219): the clip ending there and the clip starting there,
@@ -209,6 +210,11 @@ fn track_header_menu(app: &mut FilmcraftApp, ui: &mut egui::Ui, label: &str, tra
     ui.separator();
     item(ui, "deleteTrack", tl!("Delete Track"), "sequence.deleteTrack", json!({"track": track.0}));
     item(ui, "deleteTracks", tl!("Delete Tracks…"), "sequence.deleteTracks", json!({}));
+    ui.separator();
+    // M3B: the person's lock against Claude (their own edits stay free)
+    let on = app.session.project.protection.tracks.contains(&track);
+    let (text, key) = if on { (tl!("Remove Protection from Claude"), "unprotect") } else { (tl!("Protect Track from Claude"), "protect") };
+    item(ui, key, text, "protect.set", json!({"tracks": [track.0], "on": !on}));
 }
 
 /// Opens the track header menu on a right-click anywhere on `visible`, a header, even over its

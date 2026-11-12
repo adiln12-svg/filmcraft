@@ -496,9 +496,31 @@ pub fn handle(app: &mut FilmcraftApp, ctx: &egui::Context, req: &ControlRequest)
             let Some(id) = s("command").or(s("id")) else { return err("missing `command`") };
             let params = p.get("params").cloned().unwrap_or(json!({}));
             let invoke = if req.method == "engine.execute" { crate::menus::invoke_command } else { crate::menus::invoke };
-            match invoke(app, ctx, id, params) {
-                Ok(v) => ok(v),
-                Err(e) => err(e),
+            // what arrives here is an agent's (M3B): Claude's protections, revision check and
+            // activity log apply, and the reply carries the project revision it leaves
+            let c = &mut app.session.collab;
+            c.actor = filmcraft_engine::collab::Actor::Agent;
+            c.expect = p.get("expectRevision").and_then(Value::as_u64);
+            c.authorization = s("authorization").map(str::to_string);
+            let logged = c.activity.len();
+            let status = app.ui.status.clone();
+            let r = invoke(app, ctx, id, params);
+            let c = &mut app.session.collab;
+            c.actor = filmcraft_engine::collab::Actor::User;
+            c.expect = None;
+            c.authorization = None;
+            let revision = filmcraft_engine::collab::revision(&mut app.session);
+            // the person sees at once what Claude just did
+            if let Some(e) = app.session.collab.activity.last().filter(|e| e["ok"] == true)
+                && r.is_ok()
+                && app.session.collab.activity.len() != logged
+                && app.ui.status == status
+            {
+                app.ui.status = format!("Claude: {} — {}", e["label"].as_str().unwrap_or_default(), e["summary"].as_str().unwrap_or_default());
+            }
+            match r {
+                Ok(v) => Outcome::Done(json!({"ok": true, "result": v, "projectRevision": revision})),
+                Err(e) => Outcome::Done(json!({"ok": false, "error": e, "projectRevision": revision})),
             }
         }
         "engine.commands" => match app.session.execute("command.list", json!({})) {

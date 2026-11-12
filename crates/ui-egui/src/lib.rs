@@ -215,6 +215,9 @@ pub struct FilmcraftApp {
     /// (`ui.dialog.answer`): the next [`Self::pick`] / [`Self::pick_ui`] gets these paths instead
     /// of showing the host's dialog.
     pub(crate) queued_dialog_answer: Option<Vec<String>>,
+    /// Clicks, drags and keys the control channel injects come from an agent (M3B): the desktop
+    /// app with `--control` sets it, so they cannot change work protected from Claude.
+    pub synthetic_input_is_agent: bool,
     /// A save dialog's answer waiting for Replace or Cancel ([`native_dialogs`]).
     overwrite_prompt: Option<native_dialogs::PendingOverwrite>,
     pub auto: automation::Registry,

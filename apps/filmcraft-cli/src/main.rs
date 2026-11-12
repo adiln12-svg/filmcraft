@@ -552,7 +552,11 @@ async fn cli_mcp(a: &Args) {
     let server = match a.opt("--bridge") {
         Some(addr) => filmcraft_automation::FilmcraftMcp::bridge(addr).unwrap_or_else(|e| usage(e)),
         None => match Backend::open(a) {
-            Backend::Local(s) => filmcraft_automation::FilmcraftMcp::headless(*s),
+            Backend::Local(mut s) => {
+                // an agent edits through the MCP server: the person's protections apply (M3B)
+                s.collab.actor = filmcraft_engine::collab::Actor::Agent;
+                filmcraft_automation::FilmcraftMcp::headless(*s)
+            }
             Backend::Bridge(_) => usage("mcp: use --bridge ADDR to drive a running app"),
         },
     };

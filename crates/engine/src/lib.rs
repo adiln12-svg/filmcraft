@@ -16,6 +16,7 @@ pub mod autosave;
 pub mod brand_kits;
 pub mod captions;
 pub mod clip_ops;
+pub mod collab;
 pub mod color;
 pub mod commands;
 pub mod creator;
@@ -504,6 +505,9 @@ pub struct Session {
     /// Decision log of the autonomous-editing commands (`script.assemble`, `qc.render`,
     /// `autoedit.note`), read by `autoedit.report`. Session-only: not saved with the project.
     pub autoedit_log: Vec<serde_json::Value>,
+    /// Claude co-editing (M3B): who runs commands, the content revision, protection checks,
+    /// Claude's activity and authorization requests. See [`collab`].
+    pub collab: collab::Collab,
     /// Data directory of the per-user libraries (Font Library, Palette Library) when it is not
     /// the preferences' one: the CLI's `--data-dir`, tests. See [`user_library::data_dir`].
     pub library_data_dir: Option<std::path::PathBuf>,
@@ -617,6 +621,7 @@ impl Session {
             mask_jobs: Vec::new(),
             scene_jobs: Vec::new(),
             autoedit_log: Vec::new(),
+            collab: Default::default(),
             library_data_dir: None,
             presets: Default::default(),
             export_presets: Default::default(),
@@ -802,6 +807,13 @@ impl Session {
             }
             return Err(e);
         }
+        // Claude's editing commands: protection, revision check, one labelled undo step, activity
+        if collab::wraps(self, journal) {
+            return collab::run_agent(self, spec, id, &params);
+        }
+        if self.exec_depth == 0 && !self.collab.wrapping {
+            collab::observe(self, collab::Actor::User, None);
+        }
         // Only an editing command can introduce clips for the sequence-only scope. Loading a
         // document or restoring an undo snapshot must not run recognition or change that snapshot.
         let transcription_before = (self.exec_depth == 0
@@ -853,6 +865,9 @@ impl Session {
             if self.journal.len() > 10_000 {
                 self.journal.drain(..1000);
             }
+        }
+        if self.exec_depth == 0 && !self.collab.wrapping {
+            collab::observe(self, self.collab.actor, Some(spec.label.trim_end_matches('…')));
         }
         r
     }
@@ -1368,6 +1383,8 @@ mod brand_kits_tests;
 mod clip_mismatch_tests;
 #[cfg(test)]
 mod clip_ops_tests;
+#[cfg(test)]
+mod collab_tests;
 #[cfg(test)]
 mod color_tests;
 #[cfg(test)]

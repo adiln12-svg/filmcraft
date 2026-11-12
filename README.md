@@ -281,6 +281,7 @@ The control protocol is documented in [docs/control-protocol.md](docs/control-pr
 | [docs/testing.md](docs/testing.md) | Unit, property and ffmpeg-oracle tests, accuracy criteria, benchmarks |
 | [docs/agents.md](docs/agents.md) | Driving FilmCraft over MCP and the control channel; how agents develop it |
 | [docs/autonomous-editing.md](docs/autonomous-editing.md) | Editing from a brief with no person watching: take scoring, script alignment, beat tracking, edit-spec QC |
+| [docs/co-editing.md](docs/co-editing.md) | Co-editing with Claude: one project and history, protected clips and tracks, conflicts, transactions, versions and the Changes panel |
 | [docs/creator-mode.md](docs/creator-mode.md) | Creator Mode: the Start screen (new 9:16 / 16:9 / 1:1 / 4:5 video), the simple Creator workspace and toolbar, social export; the same project, timeline, commands and undo as Pro |
 | [docs/font-library.md](docs/font-library.md) | The persistent Font Library (Window ▸ Font Library): TTF/OTF/WOFF/WOFF2, variable-font weights, licences, and exports that refuse missing or substituted fonts |
 | [docs/palette-library.md](docs/palette-library.md) | The Colour Palette Library (Window ▸ Palette Library): reusable palettes with roles, shades, usage rules and immutable versions |
