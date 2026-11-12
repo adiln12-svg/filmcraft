@@ -169,3 +169,69 @@ fn a_beginner_makes_a_vertical_video_from_the_start_screen() {
     assert_eq!(h.state().ui.workspace, "Creator");
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// A heavier clip than `make_movie`'s (2160×1200, more than the 2.5 MP "4K" threshold).
+fn make_big_movie(path: &Path) {
+    let (w, h, rate) = (2160, 1200, FrameRate::FPS_24);
+    let dur = rate.tick_of(6);
+    let src = GeneratorSource::new(Generator::Demo(DemoScene::Plasma), w, h, rate, dur);
+    let clip = MediaClip {
+        media: MediaRef::Generator(Generator::Demo(DemoScene::Plasma)),
+        info: src.info().clone(),
+        interpret: Default::default(),
+        mark_in: None,
+        mark_out: None,
+        markers: vec![],
+        offline: false,
+        proxy: None,
+        identity: None,
+    };
+    let mut p = Project::new("fixture");
+    let item = p.add_item("scene", Label::Iris, ItemKind::Media(Box::new(clip)), None);
+    let seq = p.new_sequence("s", SequenceSettings { width: w, height: h, frame_rate: rate, ..Default::default() }, 1, 0, None);
+    let v = p.make_track_item(item, TrackKind::Video, Tick::ZERO, TimeRange::new(Tick::ZERO, dur), rate).unwrap();
+    p.sequence_mut(seq).unwrap().video_tracks[0].items.push(v);
+    let settings = filmcraft_engine::export::ExportSettings {
+        format: filmcraft_engine::export::Format::ProRes,
+        path: path.to_string_lossy().into_owned(),
+        include_audio: false,
+        ..Default::default()
+    };
+    let shared: filmcraft_media::SharedSource = Arc::new(src);
+    let provider = move |id| (id == item).then(|| shared.clone());
+    filmcraft_engine::export::export(&Arc::new(p), seq, &settings, &provider, &Default::default()).unwrap();
+}
+
+/// M3C: the memory plan is in force and reported; 4K clips get the editing-copies card, and its
+/// button makes the copies the monitors then play.
+#[test]
+fn creator_offers_editing_copies_for_4k_and_reports_the_memory_plan() {
+    let dir = tmp_dir("creator4k");
+    let big = dir.join("big.mov");
+    make_big_movie(&big);
+    let mut h = Harness::builder().with_size(egui::vec2(1500.0, 950.0)).build_eframe(|_cc| FilmcraftApp::new(Session::default()));
+    steps(&mut h, 4);
+    let plan = h.state().memory_plan.expect("a memory plan is applied with the settings");
+    assert_eq!(filmcraft_codecs::gop::limits(), (plan.decoded_frames, plan.max_decoders, plan.hard_decoders));
+    let stats = control(&mut h, "perf.stats", json!({}));
+    assert!(stats["result"]["memory"]["decodedFramesMB"].as_f64().is_some_and(|m| m > 0.0), "{stats}");
+    control(&mut h, "ui.dialog.answer", json!({"paths": [big.to_string_lossy()]}));
+    h.state_mut().ui.mode = filmcraft_ui_egui::state::Mode::Import;
+    steps(&mut h, 2);
+    click(&mut h, "start.aspect.9x16");
+    steps(&mut h, 3);
+    assert!(h.state().auto.find("creator.assets.smoothEditing").is_some(), "the 4K card offers editing copies");
+    click(&mut h, "creator.assets.smoothEditing");
+    // the copy is made in the background; wait for the job
+    let t0 = std::time::Instant::now();
+    while h.state().session.jobs.iter().any(|j| !j.progress.finished.load(std::sync::atomic::Ordering::Relaxed)) {
+        assert!(t0.elapsed() < std::time::Duration::from_secs(120), "proxy job");
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        steps(&mut h, 1);
+    }
+    steps(&mut h, 4);
+    let st = h.state_mut().session.execute("creator.smoothEditingStatus", json!({})).unwrap();
+    assert_eq!((st["withCopies"].as_u64(), st["using"].as_bool()), (Some(1), Some(true)), "{st}");
+    assert!(h.state().auto.find("creator.assets.smoothEditingOff").is_some());
+    let _ = std::fs::remove_dir_all(&dir);
+}

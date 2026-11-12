@@ -269,3 +269,29 @@ fn music_is_cut_to_the_video_and_export_stops_at_the_last_picture() {
     assert_eq!(frames, want, "{r}");
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+#[test]
+fn smooth_editing_makes_editing_copies_of_heavy_clips_only() {
+    let dir = tmp_dir("fc_creator_smooth");
+    // one heavy clip (2160×1200 = 2.6 MP) and one light one
+    let heavy = dir.join("big.mov");
+    make_movie(&heavy, filmcraft_media::DemoScene::Plasma, 2160, 1200, 6);
+    let light = clips(&dir, &["small.mp4"]);
+    let mut s = Session::default();
+    s.execute("creator.newVideo", json!({"aspect": "16:9", "paths": [heavy.to_string_lossy(), light[0]]})).unwrap();
+    let st = s.execute("creator.smoothEditingStatus", json!({})).unwrap();
+    assert_eq!(st["heavyClips"], 1, "{st}");
+    assert_eq!(st["suggest"], true);
+    let r = s.execute("creator.smoothEditing", json!({"wait": true})).unwrap();
+    assert_eq!(r["copiesStarted"], 1, "{r}");
+    let st = s.execute("creator.smoothEditingStatus", json!({})).unwrap();
+    assert_eq!((st["withCopies"].as_u64(), st["using"].as_bool(), st["suggest"].as_bool()), (Some(1), Some(true), Some(false)), "{st}");
+    assert!(s.media.use_proxies());
+    // the light clip got none
+    let small = s.project.items.values().find(|i| i.name == "small.mp4").unwrap();
+    assert!(small.as_media().unwrap().proxy.is_none());
+    // and the originals again
+    s.execute("creator.smoothEditing", json!({"on": false})).unwrap();
+    assert!(!s.media.use_proxies());
+    let _ = std::fs::remove_dir_all(&dir);
+}

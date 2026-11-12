@@ -48,6 +48,7 @@ impl FilmcraftApp {
             native_dialog: None,
             queued_dialog_answer: None,
             synthetic_input_is_agent: false,
+            memory_plan: None,
             overwrite_prompt: None,
             auto: Default::default(),
             ime_replacement_epoch: 0,

@@ -343,6 +343,8 @@ struct PlanCache {
     map: HashMap<FrameKey, (Arc<GpuPlan>, u64, usize)>,
     clock: u64,
     bytes: usize,
+    /// Bytes of plans kept (M3C: the memory plan's `gpu_plans`); 0 = [`Self::BUDGET`].
+    budget: usize,
 }
 
 impl PlanCache {
@@ -365,11 +367,12 @@ impl PlanCache {
         if let Some((_, _, old)) = self.map.insert(k, (Arc::new(p), self.clock, b)) {
             self.bytes -= old;
         }
-        if self.map.len() > Self::MAX || self.bytes > Self::BUDGET {
+        let budget = if self.budget == 0 { Self::BUDGET } else { self.budget };
+        if self.map.len() > Self::MAX || self.bytes > budget {
             let mut v: Vec<(u64, FrameKey, usize)> = self.map.iter().map(|(k, v)| (v.1, *k, v.2)).collect();
             v.sort_unstable_by_key(|x| x.0);
             for (_, k, b) in v {
-                if self.map.len() <= Self::MAX && self.bytes <= Self::BUDGET {
+                if self.map.len() <= Self::MAX && self.bytes <= budget {
                     break;
                 }
                 self.map.remove(&k);
@@ -481,6 +484,11 @@ impl FrameServer {
             // re-inserting an entry runs the eviction pass
             c.insert(k, v);
         }
+    }
+
+    /// GPU plans kept for frames already composited (M3C: the memory plan's `gpu_plans`).
+    pub fn set_plan_budget(&self, bytes: usize) {
+        self.shared.plans.lock().unwrap_or_else(PoisonError::into_inner).budget = bytes.max(64 << 20);
     }
 
     /// (bytes cached, budget).

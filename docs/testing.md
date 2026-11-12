@@ -319,6 +319,9 @@ own process under `/usr/bin/time` so peak RSS is per section: `decode` (every fr
 `scrub` (random seeks and playhead drags: time until the exact frame is on screen), `timeline`
 (the real app under `egui_kittest` with a 1000-clip / 20-track sequence: update, tessellation and
 wgpu render ms per frame), `export` (H.264 + AAC and ProRes) and `project` (save / open 5000 clips).
+`social` (M3C) builds a 9:16 Creator video of eight 1080×1920 or 2160×3840 phone clips with transitions,
+a look, captions, a title and music, and times import, save/open, playback, scrubbing, the TikTok export
+and (4K) editing copies, with peak memory per phase; `--ram GB` sizes the caches as for that much RAM.
 Options: `--sections decode,scrub`, `--only <substring>` (fixture or scenario), `--repeat N`,
 `--quick`, `--cpu`, `--hw auto|off` (Settings ▸ Playback ▸ Hardware decoding; default `auto`, as the app), `--label NAME` (output `target/bench/bench-<label>.{json,md}`),
 `--section NAME --json FILE` (one section in-process, e.g. under a profiler). Fixtures are made

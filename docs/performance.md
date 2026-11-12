@@ -34,6 +34,66 @@ the before/after comparison relies on. Each milestone below alternated base / af
 each); the most load-independent figure is the decoder's own cycle count (`proc_pid_rusage`
 instructions and cycles of a process, all threads summed).
 
+## M3C: short-form social video on an 8 GB Apple Silicon Mac
+
+**What was measured, where.** `cargo xtask bench --sections social` (the `social` section, new)
+builds the video a beginner makes in Creator Mode: eight 9:16 phone clips (30 fps, keyframe every
+2 s, with sound) at 1080×1920 (48 s) or 2160×3840 (32 s), a cross dissolve at every cut, the Golden
+Dusk look on every clip, eight captions, a title and a music bed. It times import, building the
+edit, save and open, playback (8 s, Full and ½, through the monitor's own scheduler), scrubbing (16
+seeks, 4 drags), and the TikTok export, with **peak memory per phase** (Linux `VmHWM`, reset per
+phase) and what the caches hold. `--ram GB` sizes every cache as the app does on a computer with
+that much RAM. **All numbers below are from a cloud Linux container** (4 x86 cores, 15 GB, no GPU,
+no hardware video codecs): CPU decoding and CPU compositing. They are **not** Apple M1
+measurements; on an M1 the app decodes with VideoToolbox and composites with Metal.
+
+**Changes.**
+
+1. **Memory plan sized to the computer** (`filmcraft_engine::perf::memory_plan`). Settings ▸ Memory
+   ▸ "RAM reserved for other applications" (4 GB by default) existed but nothing applied it, and
+   every cache had a fixed size (decoded source frames 1 GiB, monitor frames 768 MB, GPU plans
+   1 GiB, recycled planes 192 MiB per type, float images 320 MiB, 4/8 idle decoders). The app now
+   reads the RAM (`/proc/meminfo`, `sysctl hw.memsize`), keeps the reserve (at least 2 GB, at most
+   half) and sizes the caches from what is left: on an 8 GB Mac 4 GB, of which decoded frames
+   614 MB, monitor frames 410 MB, GPU plans 410 MB, planes 82 MB per type, float images 164 MB,
+   3 decoders kept by idle sources and 4 by sources left a moment ago. With 16 GB or more every
+   limit is what it was. Caches in use (the frame on screen, the clips playing) keep what they need;
+   the plan decides how much idle work stays in memory. `perf.stats` → `memory`, and Settings ▸
+   Memory shows the RAM and what FilmCraft plans for.
+2. **Editing copies for 4K in Creator Mode** (`creator.smoothEditing`). The proxy machinery
+   existed (Pro: Create Proxies, Toggle Proxies); Creator Mode now offers it when the video has
+   clips over 2.5 MP: ¼-size ProRes Proxy copies made in the background and played in the monitors,
+   exports always from the originals.
+3. Measured and **not** kept: a background export on all cores but one. It cost a quarter of the
+   export speed on 4 cores and did not make the interface more responsive (live app, a click every
+   200 ms during a TikTok export: p50 391 → 385 ms, p95 440 → 516 ms).
+
+**Results** (same fixtures, runs back to back on an otherwise idle container; "8 GB" = `--ram 8`).
+
+| social video | before | after, this machine (15 GB: old limits) | after, 8 GB plan |
+|---|---|---|---|
+| 1080×1920: peak memory play / scrub / export | 2.33 / 3.19 / 3.51 GB | 2.35 / 3.37 / 3.61 GB | **2.16 / 2.75 / 2.61 GB** |
+| 2160×3840: peak memory play / scrub / export | 3.65 / 4.86 / 5.07 GB | 3.60 / 4.60 / 5.05 GB | **2.72 / 4.33 / 4.36 GB** |
+| 1080: playback Full, ½ (shown / dropped of 8 s) | 43/192, 184/56 | 42/198, 182/58 | 40/195, 176/64 |
+| 1080: scrub seek p50 / p95 | 345 / 651 ms | 315 / 686 ms | 389 / 642 ms |
+| 4K: playback Full, ½ | 1/230, 6/234 | 1/239, 6/234 | 0/240, 7/233 |
+| 4K: scrub p50 / p95 | 1143 / 2629 ms | 991 / 2626 ms | 1429 / 2785 ms |
+| **4K with editing copies**: playback Full, ½ | – | **129/109, 231/8** | **130/109, 230/10** |
+| **4K with editing copies**: scrub p50 / p95 | – | **72 / 82 ms** | **74 / 80 ms** |
+| making the 4K editing copies (8 clips, 32 s) | – | 68 s (background) | 68 s |
+| export, 1080 / 4K sources (TikTok, CPU) | 161 / 158 s | 201 / 185 s | 198 / 180 s |
+| import 8 clips / save / open | ≈ 12 / 3 / 3 ms | same | same |
+
+Reading it: speed is unchanged by the memory plan (within the run-to-run noise of a shared
+container), and the 8 GB plan takes 0.2–0.9 GB off the peaks. The export rows "after" were measured
+with the reverted all-cores-but-one setting (point 3); the shipped export runs on every core as
+before. Linux RSS overstates what the caches hold: after an export, with no decoded frames or
+decoders left, RSS stays at 2.6–3.1 GB; with `MALLOC_ARENA_MAX=2` the same scrub peaks 0.8 GB lower,
+so that much is glibc keeping freed memory. macOS's allocator behaves differently; giving freed
+memory back explicitly would need allocator FFI, which ADR 0001 keeps out of `crates/platform`
+(an owner decision, not taken). Playback rates here are CPU-bound (no GPU, no hardware decoding)
+and say nothing about an M1, where 1080p H.264 decodes in VideoToolbox (HW1, above).
+
 ## Memory of clips on a timeline (MEM1–MEM3)
 
 Measured on the desktop release build with `footprint`, `heap` and `malloc_history`

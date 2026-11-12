@@ -310,15 +310,15 @@ struct Pool {
     caches: Mutex<Vec<Weak<Shared>>>,
     /// Caches that hold a decoder.
     decoders: AtomicUsize,
-    max_decoders: usize,
+    max_decoders: AtomicUsize,
     idle: Duration,
     /// Caches idle at least this long are no longer in use (see [`RECENT`]).
     recent: Duration,
     /// Decoders the caches idle for [`Self::recent`] but not [`Self::idle`] may keep.
-    hard_decoders: usize,
+    hard_decoders: AtomicUsize,
     /// Bytes of the frames the caches hold.
     bytes: AtomicUsize,
-    budget: usize,
+    budget: AtomicUsize,
 }
 
 /// The part of a [`GopCache`] its pool reaches.
@@ -349,19 +349,19 @@ impl Pool {
         Self {
             caches: Mutex::new(Vec::new()),
             decoders: AtomicUsize::new(0),
-            max_decoders,
+            max_decoders: AtomicUsize::new(max_decoders),
             idle,
             recent: idle,
-            hard_decoders: max_decoders,
+            hard_decoders: AtomicUsize::new(max_decoders),
             bytes: AtomicUsize::new(0),
-            budget,
+            budget: AtomicUsize::new(budget),
         }
     }
 
     /// Caches idle for `recent` (< the idle time) are still trimmed, down to `hard_decoders`.
     fn tiered(mut self, recent: Duration, hard_decoders: usize) -> Self {
         self.recent = recent.min(self.idle);
-        self.hard_decoders = hard_decoders.max(self.max_decoders);
+        self.hard_decoders = AtomicUsize::new(hard_decoders.max(self.max_decoders.load(Ordering::Relaxed)));
         self
     }
 
@@ -400,7 +400,7 @@ impl Pool {
     fn trim_decoders(&self, me: &Shared) -> Vec<Box<dyn VideoDecoder>> {
         let mut released = Vec::new();
         // first the caches idle for long, down to the cap; then those a burst has left behind
-        for (idle, cap) in [(self.idle, self.max_decoders), (self.recent, self.hard_decoders)] {
+        for (idle, cap) in [(self.idle, self.max_decoders.load(Ordering::Relaxed)), (self.recent, self.hard_decoders.load(Ordering::Relaxed))] {
             if self.decoders.load(Ordering::Relaxed) <= cap {
                 continue;
             }
@@ -456,7 +456,8 @@ impl Pool {
     /// budget. Caches in use keep theirs (each within its own budget): a frame evicted before it is shown costs a
     /// re-decode from the keyframe.
     fn trim_frames(&self, me: &Shared) {
-        let over = || self.bytes.load(Ordering::Relaxed) > self.budget;
+        let budget = self.budget.load(Ordering::Relaxed);
+        let over = || self.bytes.load(Ordering::Relaxed) > budget;
         if !over() {
             return;
         }
@@ -480,6 +481,25 @@ impl Pool {
 /// asked again.
 pub fn release_idle() {
     Pool::global().release_idle();
+}
+
+/// Memory limits of the decoder caches, process-wide (M3C: sized to the machine's RAM, see
+/// `filmcraft_engine::perf::MemoryPlan`). `frame_budget`: decoded frames all idle caches may keep
+/// together; `max_decoders` / `hard_decoders`: decoders caches idle for long / for a moment may
+/// keep. Caches in use keep their decoder and frames whatever the limits; lower limits only make
+/// idle clips give theirs up sooner. Values below a working minimum are raised to it.
+pub fn set_limits(frame_budget: usize, max_decoders: usize, hard_decoders: usize) {
+    let pool = Pool::global();
+    let max = max_decoders.max(2);
+    pool.budget.store(frame_budget.max(64 << 20), Ordering::Relaxed);
+    pool.max_decoders.store(max, Ordering::Relaxed);
+    pool.hard_decoders.store(hard_decoders.max(max), Ordering::Relaxed);
+}
+
+/// The limits in force: (frame budget bytes, max decoders, hard decoders).
+pub fn limits() -> (usize, usize, usize) {
+    let pool = Pool::global();
+    (pool.budget.load(Ordering::Relaxed), pool.max_decoders.load(Ordering::Relaxed), pool.hard_decoders.load(Ordering::Relaxed))
 }
 
 /// Caches that hold a decoder right now, process-wide (`perf.stats`).

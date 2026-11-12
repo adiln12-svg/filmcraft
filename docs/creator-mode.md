@@ -38,6 +38,12 @@ The toolbar: **Undo**, **Redo**, **Split** (cut the clip at the playhead), **Tri
 Files dropped on the window in Creator Mode are added at the end of the video, in file-name order;
 dropped on the Timeline they go where they are dropped.
 
+**4K footage.** When the video has clips larger than 1080p-class (more than 2.5 megapixels: 4K
+phone video), Assets ▸ Media offers **Make editing copies**: small ProRes copies (¼ size) made in the
+background and played in the monitors, so playback and scrubbing stay smooth on a laptop. Exports
+always use the full-quality originals. **Play the originals** switches back
+(`creator.smoothEditing {on}`, `creator.smoothEditingStatus`).
+
 ## Export video
 
 **Export video** (toolbar, or File ▸ Export ▸ Export Video…) asks only what matters:
@@ -64,7 +70,8 @@ Every Creator action is a command, for agents and scripts as much as for the int
 | `creator.addMedia {paths?, items?, at: "end"\|"playhead", keepOrder?}` | import and append at the end of the video, in order. One undo step |
 | `creator.trimToPlayhead {side: "start"\|"end"}` | ripple-trim the selected clip (or the one under the playhead) to the playhead |
 | `creator.transitions {effect?, frames?}` | a transition at every cut of the main video track. One undo step |
-| `creator.exportPresets` / `creator.export {preset?, name?, folder?, overwrite?, burnCaptions?, hardwareAcceleration?, wait?}` | social export with one extension and no overwriting |
+| `creator.exportPresets` / `creator.export {preset?, name?, folder?, overwrite?, burnCaptions?, hardwareAcceleration?, wait?, maxThreads?}` | social export with one extension and no overwriting (`maxThreads` caps its threads) |
+| `creator.smoothEditing {on, wait?}` / `creator.smoothEditingStatus` | editing copies of 4K clips for the monitors |
 | `view.creatorMode {on?}`, `creator.start`, `creator.chooseClips {aspect, paths?}`, `creator.exportDialog` | the interface (UI commands) |
 
 Editing in Creator Mode uses the same commands as the Pro workspace (`sequence.addEdit`,

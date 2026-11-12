@@ -25,7 +25,7 @@ use std::process::Command;
 
 use serde_json::{Value, json};
 
-pub const SECTIONS: &[&str] = &["decode", "seek", "playback", "scrub", "timeline", "export", "project"];
+pub const SECTIONS: &[&str] = &["decode", "seek", "playback", "scrub", "timeline", "export", "project", "social"];
 
 #[derive(Clone)]
 pub struct Opts {
@@ -36,6 +36,9 @@ pub struct Opts {
     pub only: Option<String>,
     /// Settings ▸ Playback ▸ Hardware decoding: `auto` (default, as the app) or `off`.
     pub hw: String,
+    /// `--ram GB`: size every cache as the app does on a computer with this much RAM (M3C memory
+    /// plan, default reserve); without it, the limits of this machine's RAM.
+    pub ram_gb: Option<u64>,
 }
 
 impl Opts {
@@ -63,6 +66,7 @@ fn main() {
         gpu: !args.iter().any(|a| a == "--cpu"),
         only: arg_value(&args, "--only"),
         hw: arg_value(&args, "--hw").unwrap_or_else(|| "auto".into()),
+        ram_gb: arg_value(&args, "--ram").and_then(|v| v.parse().ok()),
     };
     // as the desktop app: OS hardware decoders in front of ours, unless Hardware decoding is Off
     filmcraft_platform::register();
@@ -90,6 +94,7 @@ fn run_section(name: &str, o: &Opts) -> Value {
         "timeline" => sections::timeline(o),
         "export" => sections::export(o),
         "project" => sections::project(o),
+        "social" => sections::social(o),
         _ => panic!("unknown section {name} (one of {})", SECTIONS.join(", ")),
     };
     json!({"section": name, "rows": rows, "wall_s": t0.elapsed().as_secs_f64(), "load_before": load0, "load_after": playback::load_avg()})

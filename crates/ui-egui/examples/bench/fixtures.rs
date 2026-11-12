@@ -31,6 +31,8 @@ struct Spec {
 }
 
 const X264: &[&str] = &["-c:v", "libx264", "-preset", "fast", "-crf", "20", "-pix_fmt", "yuv420p"];
+/// Phone-like H.264: a keyframe every 2 s at 30 fps.
+const X264_PHONE: &[&str] = &["-c:v", "libx264", "-preset", "fast", "-crf", "20", "-g", "60", "-pix_fmt", "yuv420p"];
 const X265: &[&str] = &["-c:v", "libx265", "-preset", "fast", "-crf", "22", "-pix_fmt", "yuv420p", "-tag:v", "hvc1", "-x265-params", "log-level=error"];
 const VP9: &[&str] = &["-c:v", "libvpx-vp9", "-deadline", "realtime", "-cpu-used", "8", "-b:v", "0", "-crf", "32", "-row-mt", "1", "-pix_fmt", "yuv420p"];
 const AV1: &[&str] = &["-c:v", "libsvtav1", "-preset", "10", "-crf", "35", "-pix_fmt", "yuv420p", "-svtav1-params", "keyint=48"];
@@ -76,6 +78,30 @@ const SPECS: &[Spec] = &[
     Spec { name: "dec_av1_2160.mp4", src: "testsrc2=s=3840x2160:r=24000/1001:d=3,noise=alls=6:allf=t", secs: 3, audio: false, codec: AV1 },
     Spec { name: "dec_prores_1080.mov", src: "testsrc2=s=1920x1080:r=24000/1001:d=2,noise=alls=6:allf=t", secs: 2, audio: false, codec: PRORES },
     Spec { name: "dec_prores_2160.mov", src: "testsrc2=s=3840x2160:r=24000/1001:d=1,noise=alls=6:allf=t", secs: 1, audio: false, codec: PRORES },
+    // Short-form social video (the `social` section): 9:16 phone-like clips at 30 fps, a keyframe
+    // every 2 s, with sound; 1080×1920 and 2160×3840.
+    Spec { name: "social1080_1.mp4", src: "testsrc2=s=1080x1920:r=30:d=6,noise=alls=6:allf=t", secs: 6, audio: true, codec: X264_PHONE },
+    Spec { name: "social1080_2.mp4", src: "mandelbrot=s=1080x1920:r=30,trim=duration=6,noise=alls=6:allf=t", secs: 6, audio: true, codec: X264_PHONE },
+    Spec { name: "social1080_3.mp4", src: "testsrc2=s=1080x1920:r=30:d=6,hue=h=120,noise=alls=6:allf=t", secs: 6, audio: true, codec: X264_PHONE },
+    Spec {
+        name: "social1080_4.mp4",
+        src: "mandelbrot=s=1080x1920:r=30:start_scale=1,trim=duration=6,noise=alls=6:allf=t",
+        secs: 6,
+        audio: true,
+        codec: X264_PHONE,
+    },
+    Spec { name: "social1080_5.mp4", src: "testsrc2=s=1080x1920:r=30:d=6,hue=h=240,noise=alls=6:allf=t", secs: 6, audio: true, codec: X264_PHONE },
+    Spec { name: "social1080_6.mp4", src: "testsrc=s=1080x1920:r=30:d=6,noise=alls=6:allf=t", secs: 6, audio: true, codec: X264_PHONE },
+    Spec { name: "social1080_7.mp4", src: "testsrc2=s=1080x1920:r=30:d=6,negate,noise=alls=6:allf=t", secs: 6, audio: true, codec: X264_PHONE },
+    Spec { name: "social1080_8.mp4", src: "smptehdbars=s=1080x1920:r=30:d=6,noise=alls=8:allf=t", secs: 6, audio: true, codec: X264_PHONE },
+    Spec { name: "social2160_1.mp4", src: "testsrc2=s=2160x3840:r=30:d=4,noise=alls=6:allf=t", secs: 4, audio: true, codec: X264_PHONE },
+    Spec { name: "social2160_2.mp4", src: "mandelbrot=s=2160x3840:r=30,trim=duration=4,noise=alls=6:allf=t", secs: 4, audio: true, codec: X264_PHONE },
+    Spec { name: "social2160_3.mp4", src: "testsrc2=s=2160x3840:r=30:d=4,hue=h=120,noise=alls=6:allf=t", secs: 4, audio: true, codec: X264_PHONE },
+    Spec { name: "social2160_4.mp4", src: "testsrc=s=2160x3840:r=30:d=4,noise=alls=6:allf=t", secs: 4, audio: true, codec: X264_PHONE },
+    Spec { name: "social2160_5.mp4", src: "testsrc2=s=2160x3840:r=30:d=4,hue=h=240,noise=alls=6:allf=t", secs: 4, audio: true, codec: X264_PHONE },
+    Spec { name: "social2160_6.mp4", src: "smptehdbars=s=2160x3840:r=30:d=4,noise=alls=8:allf=t", secs: 4, audio: true, codec: X264_PHONE },
+    Spec { name: "social2160_7.mp4", src: "testsrc2=s=2160x3840:r=30:d=4,negate,noise=alls=6:allf=t", secs: 4, audio: true, codec: X264_PHONE },
+    Spec { name: "social2160_8.mp4", src: "testsrc=s=2160x3840:r=30:d=4,hue=h=60,noise=alls=6:allf=t", secs: 4, audio: true, codec: X264_PHONE },
     // Small clip media for the 1000-clip timeline / project benchmarks (video + audio).
     Spec { name: "clip360.mp4", src: "testsrc2=s=640x360:r=24000/1001:d=20", secs: 20, audio: true, codec: X264 },
 ];

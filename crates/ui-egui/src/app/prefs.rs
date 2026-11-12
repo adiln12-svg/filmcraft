@@ -106,7 +106,14 @@ impl FilmcraftApp {
             i18n::set_current(self.ui.language);
             ctx.set_language(Some(self.ui.language.bcp47().to_owned()));
         }
-        self.frames.set_cache_budget(p.memory.frame_cache_mb as usize * (1 << 20));
+        // M3C: every cache sized to this computer's RAM less what other applications need
+        if prev.as_ref().is_none_or(|q| q.memory != p.memory) {
+            let plan = filmcraft_engine::perf::memory_plan(filmcraft_engine::perf::total_ram(), p.memory.ram_reserved_gb, p.memory.frame_cache_mb);
+            filmcraft_engine::perf::apply_memory_plan(&plan);
+            self.frames.set_cache_budget(plan.frame_cache);
+            self.frames.set_plan_budget(plan.gpu_plans);
+            self.memory_plan = Some(plan);
+        }
         self.ui.play_after_render = p.timeline.play_after_rendering;
         let hardware_changed = prev.as_ref().is_none_or(|q| q.audio_hardware != p.audio_hardware);
         let pitch_changed = prev.as_ref().is_some_and(|q| q.audio.maintain_pitch_shuttling != p.audio.maintain_pitch_shuttling);

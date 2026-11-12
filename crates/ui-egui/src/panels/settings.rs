@@ -759,7 +759,21 @@ fn custom(app: &mut FilmcraftApp, ui: &mut Ui, d: &mut SettingsDraft, name: &str
         "memoryInfo" => {
             let (used, budget) = app.frames.cache_usage();
             note(ui, &t, &tlf!("Decoded frames held for the monitors and thumbnails: {used} of {budget}.", used = mb(used as u64), budget = mb(budget as u64)));
-            note(ui, &t, tl!("FilmCraft keeps the rest of the RAM free for other applications."));
+            if let Some(plan) = app.memory_plan {
+                let gb = |b: u64| format!("{:.1} GB", b as f64 / (1u64 << 30) as f64);
+                let total = plan.total_ram.map_or_else(|| tl!("unknown").to_string(), gb);
+                note(
+                    ui,
+                    &t,
+                    &tlf!(
+                        "This computer: {total} of RAM. FilmCraft plans its caches for {avail} and leaves the rest to other applications.",
+                        total = total,
+                        avail = gb(plan.available)
+                    ),
+                );
+            } else {
+                note(ui, &t, tl!("FilmCraft keeps the rest of the RAM free for other applications."));
+            }
         }
         "mediaCacheInfo" => {
             if d.cache_info.is_null() {

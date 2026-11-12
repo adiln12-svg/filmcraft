@@ -173,9 +173,21 @@ pub fn seek(o: &Opts) -> Vec<Value> {
 
 // ------------------------------------------------------------------------------------ playback
 
+/// The memory plan the app would use: `--ram GB` simulates that computer, otherwise this one.
+pub fn memory_plan(o: &Opts) -> filmcraft_engine::perf::MemoryPlan {
+    let ram = o.ram_gb.map(|g| g << 30).or_else(filmcraft_engine::perf::total_ram);
+    filmcraft_engine::perf::memory_plan(ram, 4, 768)
+}
+
 fn new_bench(s: &Session, seconds: f64) -> Bench {
     let server = FrameServer::new(s.media.clone(), s.services.clone(), s.previews.clone(), FrameServer::default_workers());
     server.set_profiling(true);
+    // the app's memory plan, as `apply_prefs` sets it
+    let plan = PLAN.with(|p| *p.borrow());
+    if let Some(plan) = plan {
+        server.set_cache_budget(plan.frame_cache);
+        server.set_plan_budget(plan.gpu_plans);
+    }
     Bench { server, refresh_hz: 60.0, seconds, draft: false }
 }
 
@@ -583,4 +595,196 @@ pub fn project(o: &Opts) -> Vec<Value> {
     eprintln!("project: save {:.0} ms, open {:.0} ms ({clips} clips, {mbytes:.1} MB)", median(&save), median(&open));
     let row = |what: &str, v: &[f64]| json!({"what": what, "clips": clips, "mbytes": mbytes, "p50_ms": median(v), "min_ms": v.iter().cloned().fold(f64::MAX, f64::min), "runs_ms": v, "load": load_avg()});
     vec![row("save (file.saveAs)", &save), row("open (file.open)", &open)]
+}
+
+// ------------------------------------------------------------------------------------ social
+
+thread_local! {
+    /// The memory plan the `social` section runs with (see [`memory_plan`]).
+    static PLAN: std::cell::RefCell<Option<filmcraft_engine::perf::MemoryPlan>> = const { std::cell::RefCell::new(None) };
+}
+
+/// Where the memory is: decoded source frames, idle recycled buffers, live decoders (MB).
+fn memory_breakdown() -> Value {
+    let pool = filmcraft_frame::pool::stats();
+    json!({"decoded_mb": filmcraft_codecs::cached_bytes() as f64 / 1e6, "idle_buffers_mb": pool.idle_bytes as f64 / 1e6,
+        "float_buffers_mb": pool.f32_idle_bytes as f64 / 1e6, "live_decoders": filmcraft_codecs::live_decoders()})
+}
+
+/// Peak resident set size since the last [`reset_peak_rss`], in MB (Linux; None elsewhere).
+fn peak_rss_mb() -> Option<f64> {
+    let s = std::fs::read_to_string("/proc/self/status").ok()?;
+    let kb: f64 = s.lines().find(|l| l.starts_with("VmHWM:"))?.split_whitespace().nth(1)?.parse().ok()?;
+    Some(kb / 1024.0)
+}
+
+/// Current resident set size in MB (Linux).
+fn rss_mb() -> Option<f64> {
+    let s = std::fs::read_to_string("/proc/self/status").ok()?;
+    let kb: f64 = s.lines().find(|l| l.starts_with("VmRSS:"))?.split_whitespace().nth(1)?.parse().ok()?;
+    Some(kb / 1024.0)
+}
+
+/// Start a new peak-RSS window (Linux `clear_refs` 5); a no-op elsewhere.
+fn reset_peak_rss() {
+    let _ = std::fs::write("/proc/self/clear_refs", "5");
+}
+
+/// A 30 s stereo music bed (sine chords) as a WAV, written with our own code.
+fn music_wav(path: &std::path::Path) {
+    let rate = 48_000u32;
+    let n = rate as usize * 30;
+    let mut b = Vec::with_capacity(44 + n * 4);
+    let data = (n * 4) as u32;
+    b.extend_from_slice(b"RIFF");
+    b.extend_from_slice(&(36 + data).to_le_bytes());
+    b.extend_from_slice(b"WAVEfmt ");
+    b.extend_from_slice(&16u32.to_le_bytes());
+    b.extend_from_slice(&1u16.to_le_bytes());
+    b.extend_from_slice(&2u16.to_le_bytes());
+    b.extend_from_slice(&rate.to_le_bytes());
+    b.extend_from_slice(&(rate * 4).to_le_bytes());
+    b.extend_from_slice(&4u16.to_le_bytes());
+    b.extend_from_slice(&16u16.to_le_bytes());
+    b.extend_from_slice(b"data");
+    b.extend_from_slice(&data.to_le_bytes());
+    for i in 0..n {
+        let t = i as f64 / rate as f64;
+        let v = ((t * 220.0 * std::f64::consts::TAU).sin() + (t * 277.2 * std::f64::consts::TAU).sin() * 0.6) * 5000.0;
+        let v = v as i16;
+        b.extend_from_slice(&v.to_le_bytes());
+        b.extend_from_slice(&v.to_le_bytes());
+    }
+    std::fs::write(path, b).expect("music wav");
+}
+
+/// One timed phase: seconds, process CPU seconds, peak RSS MB in the phase, RSS after.
+fn phase<T>(f: impl FnOnce() -> T) -> (T, Value) {
+    reset_peak_rss();
+    let (t0, c0) = (Instant::now(), cpu_now());
+    let v = f();
+    let info = json!({"s": t0.elapsed().as_secs_f64(), "cpu_s": (cpu_now() - c0).as_secs_f64(), "peak_mb": peak_rss_mb(), "rss_mb": rss_mb(), "held": memory_breakdown()});
+    (v, info)
+}
+
+/// The short-form social video a beginner makes in Creator Mode: eight 9:16 clips, a cross
+/// dissolve at every cut, a colour look on every clip, eight captions, a title and a music bed,
+/// at 1080×1920 or with 4K (2160×3840) phone footage. Times import, building the edit, save and
+/// open, playback (Full and ½), scrubbing and the TikTok export, with peak memory per phase.
+pub fn social(o: &Opts) -> Vec<Value> {
+    let mut rows = Vec::new();
+    // the app's limits for this (or the simulated) computer; only where the plan exists (M3C)
+    let plan = memory_plan(o);
+    filmcraft_engine::perf::apply_memory_plan(&plan);
+    PLAN.with(|p| *p.borrow_mut() = Some(plan));
+    for size in ["1080", "2160"].into_iter().filter(|v| o.wants(&format!("social{v}"))) {
+        let paths: Option<Vec<std::path::PathBuf>> = (1..=8).map(|i| fixture(&format!("social{size}_{i}.mp4"))).collect();
+        let Some(paths) = paths else {
+            eprintln!("social{size}: skipped (fixtures unavailable)");
+            continue;
+        };
+        for rep in 0..o.repeat {
+            let dir = tempfile::Builder::new().prefix("filmcraft-bench-social-").tempdir().expect("tmp dir");
+            let music = dir.path().join("music.wav");
+            music_wav(&music);
+            let mut s = Session::default();
+            s.library_data_dir = Some(dir.path().join("data"));
+            let mut row =
+                json!({"scenario": format!("social{size}"), "run": rep + 1, "load": load_avg(), "memory_plan": filmcraft_engine::perf::memory_json(&plan)});
+            let paths_json: Vec<String> = paths.iter().map(|p| p.to_string_lossy().to_string()).collect();
+            // 1. new 9:16 video from the eight files (import, probe, place)
+            let (r, p) = phase(|| s.execute("creator.newVideo", json!({"aspect": "9:16", "paths": paths_json})));
+            let seq = r.ok().and_then(|v| v["sequence"].as_u64()).map(ItemId).expect("new video");
+            row["import"] = p;
+            // 2. the edit: transitions, a look, captions, a title, music
+            let (_, p) = phase(|| {
+                s.execute("creator.transitions", json!({})).ok();
+                let clips: Vec<u64> = s.active_sequence().map(|q| q.video_tracks[0].items.iter().map(|i| i.id.0).collect()).unwrap_or_default();
+                s.execute("lumetri.applyPreset", json!({"name": "Golden Dusk", "clips": clips})).ok();
+                for i in 0..8 {
+                    s.execute("captions.add", json!({"text": format!("Caption number {}", i + 1), "seconds": 0.5 + i as f64 * 2.5, "durationSeconds": 2.0}))
+                        .ok();
+                }
+                s.execute("playhead.set", json!({"seconds": 0})).ok();
+                s.execute("creator.addTitle", json!({"text": "Summer reel"})).ok();
+                s.execute("creator.addMedia", json!({"paths": [music.to_string_lossy()]})).ok();
+            });
+            row["build"] = p;
+            let secs = s.project.sequence(seq).map(|q| q.duration().seconds()).unwrap_or(0.0);
+            row["video_seconds"] = json!(secs);
+            // 3. save and open again
+            let file = dir.path().join("social.fcproj").to_string_lossy().to_string();
+            let (_, p) = phase(|| s.execute("file.save", json!({ "path": file })).ok());
+            row["save"] = p;
+            let (_, p) = phase(|| s.execute("file.open", json!({ "path": file })).ok());
+            row["open"] = p;
+            let seq = s.state.active_sequence.unwrap_or(seq);
+            // 4. playback from the start, Full and ½ (a fresh frame server each, as after opening)
+            let seconds = if o.quick { 4.0 } else { 8.0 };
+            for (res, scale) in [("full", 1.0f32), ("half", 0.5f32)] {
+                let mut display = Display::new(o.gpu);
+                let ((r, peak_decode_mb), p) = phase(|| {
+                    let bench = new_bench(&s, seconds);
+                    let r = bench.play(&s, seq, &mut display, scale, Tick::ZERO, &format!("social{size} {res}"));
+                    (r, filmcraft_codecs::gop::cached_bytes() as f64 / 1e6)
+                });
+                let frames = (r.shown + r.dropped).max(1) as f64;
+                row[format!("play_{res}")] = json!({
+                    "shown": r.shown, "dropped": r.dropped, "drop_pct": 100.0 * r.dropped as f64 / frames,
+                    "cpu_ms_per_frame": r.process_cpu / frames, "ui_p95_ms": pct(&r.present, 0.95),
+                    "decode_cache_mb": peak_decode_mb, "phase": p,
+                });
+                eprintln!("social{size} play {res}: {}/{} shown/dropped", r.shown, r.dropped);
+            }
+            // 5. scrubbing
+            let (seeks, drags) = if o.quick { (8, 3) } else { (16, 4) };
+            let (r, p) = phase(|| {
+                let bench = new_bench(&s, 0.0);
+                let mut display = Display::new(o.gpu);
+                bench.scrub(&s, seq, &mut display, 1.0, playback::ScrubPlan { seeks, drags, drag_frames: 15, timeout: Duration::from_secs(8) })
+            });
+            row["scrub"] = json!({"seek_p50_ms": pct(&r.seek_ms, 0.5), "seek_p95_ms": pct(&r.seek_ms, 0.95), "timeouts": r.timeouts,
+                "drag_shown_pct": 100.0 * r.drag_shown as f64 / r.drag_steps.max(1) as f64, "phase": p});
+            eprintln!("social{size} scrub: p50 {:.0} ms p95 {:.0} ms", pct(&r.seek_ms, 0.5), pct(&r.seek_ms, 0.95));
+            // 6. export with the TikTok preset (the Creator Export video dialog)
+            let out = dir.path().join("out");
+            std::fs::create_dir_all(&out).ok();
+            let hw = o.hw != "off";
+            let (r, p) = phase(|| {
+                s.execute(
+                    "creator.export",
+                    json!({"preset": "tiktok", "folder": out.to_string_lossy(), "name": "reel", "wait": true, "hardwareAcceleration": hw}),
+                )
+            });
+            let frames = s.project.sequence(seq).map(|q| q.settings.frame_rate.frame_at(q.duration())).unwrap_or(0) as f64;
+            let ok = r.as_ref().is_ok_and(|v| v["result"]["error"].is_null());
+            row["export"] = json!({"ok": ok, "error": r.as_ref().err().map(|e| e.to_string()), "frames": frames,
+                "fps": frames / p["s"].as_f64().unwrap_or(1.0).max(1e-9), "realtime": secs / p["s"].as_f64().unwrap_or(1.0).max(1e-9),
+                "mbytes": std::fs::metadata(out.join("reel.mp4")).map(|m| m.len() as f64 / 1e6).unwrap_or(0.0), "phase": p});
+            eprintln!("social{size} export: {:.1} s", row["export"]["phase"]["s"].as_f64().unwrap_or(0.0));
+            row["decoders"] = json!(filmcraft_codecs::gop::live_decoders());
+            // 7. 4K: Creator's smooth editing (editing copies), then playback and scrubbing on them
+            if s.execute("creator.smoothEditingStatus", json!({})).ok().is_some_and(|v| v["suggest"] == true) {
+                let (r, p) = phase(|| s.execute("creator.smoothEditing", json!({"wait": true})));
+                row["smooth"] = json!({"ok": r.is_ok(), "phase": p});
+                for (res, scale) in [("full", 1.0f32), ("half", 0.5f32)] {
+                    let mut display = Display::new(o.gpu);
+                    let (r, p) = phase(|| new_bench(&s, seconds).play(&s, seq, &mut display, scale, Tick::ZERO, &format!("social{size} copies {res}")));
+                    let frames = (r.shown + r.dropped).max(1) as f64;
+                    row[format!("copies_play_{res}")] = json!({"shown": r.shown, "dropped": r.dropped, "drop_pct": 100.0 * r.dropped as f64 / frames,
+                        "cpu_ms_per_frame": r.process_cpu / frames, "phase": p});
+                    eprintln!("social{size} editing copies play {res}: {}/{} shown/dropped", r.shown, r.dropped);
+                }
+                let (r, p) = phase(|| {
+                    let bench = new_bench(&s, 0.0);
+                    let mut display = Display::new(o.gpu);
+                    bench.scrub(&s, seq, &mut display, 1.0, playback::ScrubPlan { seeks, drags, drag_frames: 15, timeout: Duration::from_secs(8) })
+                });
+                row["copies_scrub"] = json!({"seek_p50_ms": pct(&r.seek_ms, 0.5), "seek_p95_ms": pct(&r.seek_ms, 0.95), "timeouts": r.timeouts, "phase": p});
+                eprintln!("social{size} editing copies scrub: p50 {:.0} ms p95 {:.0} ms", pct(&r.seek_ms, 0.5), pct(&r.seek_ms, 0.95));
+            }
+            rows.push(row);
+        }
+    }
+    rows
 }

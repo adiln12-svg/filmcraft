@@ -348,9 +348,45 @@ fn small_button(app: &mut FilmcraftApp, ui: &mut egui::Ui, id: &str, label: &str
     r.clicked()
 }
 
+/// 4K footage (M3C): offer small editing copies so playback and scrubbing stay smooth.
+fn smooth_card(app: &mut FilmcraftApp, ui: &mut egui::Ui, acts: &mut Vec<Act>) {
+    let st = app.session.execute("creator.smoothEditingStatus", json!({})).unwrap_or_default();
+    let heavy = st["heavyClips"].as_u64().unwrap_or(0);
+    if heavy == 0 {
+        return;
+    }
+    let busy = app.session.jobs.iter().any(|j| j.label.contains("Proxies") && !j.progress.finished.load(std::sync::atomic::Ordering::Relaxed));
+    let t = app.tokens;
+    egui::Frame::new().fill(t.pill_active_bg).corner_radius(6.0).inner_margin(8.0).show(ui, |ui| {
+        if busy {
+            ui.label(tl!("Making editing copies of your 4K clips…"));
+            hint(ui, &t, tl!("You can keep editing meanwhile."));
+        } else if st["suggest"] == true {
+            ui.label(egui::RichText::new(tlf!("{n} 4K clips", n = heavy)).strong());
+            hint(ui, &t, tl!("Make smaller editing copies so playback and scrubbing stay smooth. Exports still use the full-quality originals."));
+            let r = ui.button(tl!("Make editing copies"));
+            app.auto.add_response("creator.assets.smoothEditing", &r, tl!("Make editing copies"));
+            if r.clicked() {
+                acts.push(Act::Cmd("creator.smoothEditing", json!({})));
+            }
+        } else {
+            hint(ui, &t, tl!("Playing editing copies of your 4K clips. Exports use the originals."));
+            let r = ui.small_button(tl!("Play the originals"));
+            app.auto.add_response("creator.assets.smoothEditingOff", &r, tl!("Play the originals"));
+            if r.clicked() {
+                acts.push(Act::Cmd("creator.smoothEditing", json!({"on": false})));
+            }
+        }
+    });
+    ui.add_space(6.0);
+}
+
 fn media_tab(app: &mut FilmcraftApp, ui: &mut egui::Ui, music: bool, acts: &mut Vec<Act>) {
     let t = app.tokens;
     let has_seq = app.session.active_sequence().is_some();
+    if !music {
+        smooth_card(app, ui, acts);
+    }
     let (id, label) = if music { ("creator.assets.addMusic", tl!("Add music…")) } else { ("creator.assets.addMedia", tl!("Add media…")) };
     if big_button(app, ui, id, label, true) {
         acts.push(Act::Ui("creator.addMediaDialog", json!({ "music": music })));

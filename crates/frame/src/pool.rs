@@ -18,8 +18,21 @@ use std::sync::{Arc, Mutex, PoisonError};
 
 use crate::{PixelData, VideoFrame};
 
-/// Bytes of idle buffers kept per sample type; a buffer that does not fit is freed.
+/// Bytes of idle buffers kept per sample type by default; a buffer that does not fit is freed.
 const MAX_BYTES: usize = 192 << 20;
+
+/// The limits in force (M3C: sized to the machine's RAM, [`set_limits`]).
+static PLANE_LIMIT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(MAX_BYTES);
+static F32_LIMIT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(F32_MAX_BYTES);
+
+/// Bytes of idle buffers kept per plane sample type and for the compositor's float images (at
+/// most the defaults); what is held beyond them now is freed.
+pub fn set_limits(planes: usize, f32_images: usize) {
+    PLANE_LIMIT.store(planes.min(MAX_BYTES), Ordering::Relaxed);
+    F32_LIMIT.store(f32_images.min(F32_MAX_BYTES), Ordering::Relaxed);
+    trim_planes();
+    trim_f32();
+}
 
 /// Smaller buffers are not worth keeping (the allocator recycles those well).
 const MIN_BYTES: usize = 64 << 10;
@@ -88,7 +101,7 @@ fn take<T>(shelf: &Mutex<Shelf<T>>, len: usize) -> Vec<T> {
 fn give<T>(shelf: &Mutex<Shelf<T>>, plane: Arc<Vec<T>>) {
     // a plane something else still shows (a monitor, a GPU upload in flight) is theirs
     if let Ok(b) = Arc::try_unwrap(plane) {
-        shelf.lock().unwrap_or_else(PoisonError::into_inner).give(b, MAX_BYTES);
+        shelf.lock().unwrap_or_else(PoisonError::into_inner).give(b, PLANE_LIMIT.load(Ordering::Relaxed));
     }
 }
 
@@ -124,7 +137,7 @@ pub fn recycle_f32(buf: Vec<f32>) {
     }
     let mut idle = F32.lock().unwrap_or_else(PoisonError::into_inner);
     let held: usize = idle.iter().map(|b| b.len().saturating_mul(4)).sum();
-    if held.saturating_add(bytes) <= F32_MAX_BYTES {
+    if held.saturating_add(bytes) <= F32_LIMIT.load(Ordering::Relaxed) {
         idle.push(buf);
     }
 }

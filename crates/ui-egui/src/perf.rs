@@ -31,6 +31,7 @@ pub fn stats(app: &FilmcraftApp) -> Value {
     frames["renderCostMs"] = json!(app.frames.render_cost() * 1e3);
     frames["cache"] = json!({"images": images, "imageMB": image_bytes as f64 / 1e6, "plans": plans, "planMB": plan_bytes as f64 / 1e6});
     v["frames"] = frames;
+    v["memory"] = app.memory_plan.as_ref().map_or(Value::Null, filmcraft_engine::perf::memory_json);
     v["gpu"] = app.gpu.as_ref().map_or(Value::Null, |g| {
         json!({
             "uploadedBytes": g.compositor.uploaded_bytes,

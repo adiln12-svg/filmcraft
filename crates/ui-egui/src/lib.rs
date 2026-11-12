@@ -218,6 +218,8 @@ pub struct FilmcraftApp {
     /// Clicks, drags and keys the control channel injects come from an agent (M3B): the desktop
     /// app with `--control` sets it, so they cannot change work protected from Claude.
     pub synthetic_input_is_agent: bool,
+    /// The cache limits in force for this computer's RAM (M3C; Settings ▸ Memory).
+    pub memory_plan: Option<filmcraft_engine::perf::MemoryPlan>,
     /// A save dialog's answer waiting for Replace or Cancel ([`native_dialogs`]).
     overwrite_prompt: Option<native_dialogs::PendingOverwrite>,
     pub auto: automation::Registry,

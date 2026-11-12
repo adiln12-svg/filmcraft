@@ -573,6 +573,12 @@ fn export(s: &mut Session, p: &Value) -> Result<Value> {
         q["width"] = json!(w);
         q["height"] = json!(h);
     }
+    // `maxThreads` caps the export's threads (default: every core). Leaving a core to the
+    // interface was measured in M3C (docs/performance.md) and made editing no more responsive
+    // while costing a quarter of the export speed on 4 cores, so it is not the default.
+    if let Some(n) = crate::commands::checked_u32_p(p, "maxThreads", cmd)? {
+        q["maxThreads"] = json!(n);
+    }
     // the video is as long as its picture: music or sound past the last clip is not exported as black
     let end = picture_end(s);
     if end > Tick::ZERO && s.active_sequence().is_some_and(|q| q.duration() > end) {
@@ -584,6 +590,57 @@ fn export(s: &mut Session, p: &Value) -> Result<Value> {
     out["creatorPreset"] = json!(label);
     out["hardwareAcceleration"] = json!(fast);
     Ok(out)
+}
+
+/// Footage larger than this (pixels per frame) is heavy to decode for editing on a laptop: 4K and
+/// up (a 1080×1920 phone clip is 2.07 MP).
+pub const HEAVY_PIXELS: u64 = 2_500_000;
+
+/// The project's video media heavier than [`HEAVY_PIXELS`]: (item, has a proxy).
+fn heavy_clips(s: &Session) -> Vec<(ItemId, bool)> {
+    s.project
+        .items
+        .iter()
+        .filter_map(|(id, it)| {
+            let m = it.as_media()?;
+            let v = m.info.video.as_ref()?;
+            (matches!(m.info.kind, filmcraft_media::MediaKind::Movie) && u64::from(v.width) * u64::from(v.height) > HEAVY_PIXELS)
+                .then_some((*id, m.proxy.is_some()))
+        })
+        .collect()
+}
+
+/// `creator.smoothEditing`: where the project has heavy (4K) footage, make small editing copies
+/// (proxies, ¼ size ProRes Proxy) and play them in the monitors; exports always use the
+/// originals. `on: false` plays the originals again.
+fn smooth_editing(s: &mut Session, p: &Value) -> Result<Value> {
+    let on = bool_p(p, "on").unwrap_or(true);
+    if !on {
+        s.execute("prefs.set", json!({"key": "media.enableProxies", "value": false}))?;
+        return Ok(json!({"on": false}));
+    }
+    let heavy = heavy_clips(s);
+    let missing: Vec<u64> = heavy.iter().filter(|(_, has)| !has).map(|(i, _)| i.0).collect();
+    let job = if missing.is_empty() {
+        Value::Null
+    } else {
+        let mut q = json!({ "items": missing });
+        if let Some(w) = bool_p(p, "wait") {
+            q["wait"] = json!(w);
+        }
+        s.execute("media.createProxies", q)?
+    };
+    s.execute("prefs.set", json!({"key": "media.enableProxies", "value": true}))?;
+    Ok(json!({"on": true, "heavyClips": heavy.len(), "copiesStarted": missing.len(), "job": job}))
+}
+
+/// `creator.smoothEditingStatus`: heavy clips, how many have editing copies, whether the
+/// monitors play them, and whether Creator Mode should suggest making them.
+fn smooth_status(s: &mut Session, _: &Value) -> Result<Value> {
+    let heavy = heavy_clips(s);
+    let with = heavy.iter().filter(|h| h.1).count();
+    let on = s.media.use_proxies();
+    Ok(json!({"heavyClips": heavy.len(), "withCopies": with, "using": on, "suggest": !heavy.is_empty() && (with < heavy.len() || !on)}))
 }
 
 /// The Creator Mode commands.
@@ -620,13 +677,21 @@ pub(crate) fn commands() -> Vec<CommandSpec> {
         ),
         c("creator.delete", "Delete Clips", r#"{"clips":[id]?} (default: the selection; titles, music and captions on other tracks stay)"#, has_seq, delete),
         c("creator.moveClip", "Move Clip", r#"{"clip":id,"time":ticks} (to the cut nearest `time`; the gap it leaves closes)"#, has_seq, move_clip),
+        c(
+            "creator.smoothEditing",
+            "Smooth Editing for 4K",
+            r#"{"on":bool=true,"wait":bool?} (editing copies of 4K and larger clips, played in the monitors; exports use the originals)"#,
+            always,
+            smooth_editing,
+        ),
+        CommandSpec { journal: false, ..c("creator.smoothEditingStatus", "Smooth Editing Status", "{}", always, smooth_status) },
         c("creator.addTitle", "Add Title", r#"{"text":str="Your title","seconds":f64=3} (at the playhead, centred, sized to the frame)"#, has_seq, add_title),
         c("creator.transitions", "Transitions at Every Cut", r#"{"effect":str="cross_dissolve","frames":i64=10}"#, has_seq, transitions),
         CommandSpec { journal: false, ..c("creator.exportPresets", "Social Export Presets", "{}", always, export_presets) },
         c(
             "creator.export",
             "Export Video",
-            r#"{"preset":"tiktok|reels|shorts|youtube|square|portrait|original"? (default: by the video's shape),"name":str? (no extension needed),"folder":str?,"overwrite":bool=false,"burnCaptions":bool? (default: when the video has captions),"hardwareAcceleration":bool? (default: on for macOS),"wait":bool=false}"#,
+            r#"{"preset":"tiktok|reels|shorts|youtube|square|portrait|original"? (default: by the video's shape),"name":str? (no extension needed),"folder":str?,"overwrite":bool=false,"burnCaptions":bool? (default: when the video has captions),"hardwareAcceleration":bool? (default: on for macOS),"wait":bool=false,"maxThreads":n? (default: every core)}"#,
             has_seq,
             export,
         ),
