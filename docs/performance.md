@@ -34,6 +34,23 @@ the before/after comparison relies on. Each milestone below alternated base / af
 each); the most load-independent figure is the decoder's own cycle count (`proc_pid_rusage`
 instructions and cycles of a process, all threads summed).
 
+## Outstanding: Apple M1 (8 GB) verification — UNVERIFIED
+
+M3C was measured only on cloud Linux (x86, no GPU, no hardware video codecs). **None of the following
+has been tested on Apple M1 hardware**; each stays open until someone measures it on an M1 with
+8 GB of unified memory (`cargo xtask bench --sections social --label m1`, then the app by hand):
+
+| Requirement | How to verify on the M1 | Status |
+|---|---|---|
+| VideoToolbox hardware decoding is used for 1080×1920 and 2160×3840 H.264/HEVC phone clips | `perf.stats` → `decode.hardware.sessions` > 0 and `softwareFrames` ≈ 0 while playing; bench `hw_frames` | **unverified** |
+| VideoToolbox hardware encoding is used by Creator's export (Fast export on) | bench / `perf.stats` → `export.hardware.frames` > 0; export time vs software | **unverified** |
+| Metal (GPU) compositing is used for monitor playback and export rendering | `perf.stats` → `gpu` not null, `export.gpuFrames` > 0 | **unverified** |
+| Playback of the social project (8 clips, transitions, look, captions, title, music) at Full and ½ without dropped frames | bench `social` play rows (shown / dropped); by eye in Creator Mode | **unverified** |
+| Scrubbing latency (seek p50 / p95) at 1080 and 4K, with and without editing copies | bench `social` scrub rows | **unverified** |
+| Memory: the 8 GB memory plan keeps the process footprint well below 8 GB in playback, scrubbing and export | Activity Monitor "Memory" / `footprint` during the bench; `perf.stats` → `memory` | **unverified** |
+| Editing copies (4K → ¼-size ProRes proxies): time to make them and smooth playback afterwards | bench `social2160` `smooth` and `copies_*` rows | **unverified** |
+| No swapping on 8 GB during a 30–60 s Creator edit and export | Activity Monitor "Swap Used" before / after | **unverified** |
+
 ## M3C: short-form social video on an 8 GB Apple Silicon Mac
 
 **What was measured, where.** `cargo xtask bench --sections social` (the `social` section, new)

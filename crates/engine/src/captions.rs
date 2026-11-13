@@ -42,6 +42,99 @@ fn has_captions(s: &Session) -> std::result::Result<(), String> {
 }
 
 /// The caption track named by `track` (id or "C1"…), else the first one.
+/// `captions.setStyle`'s social settings (M3D): the spoken word's colour, animation, capitals.
+fn social_style(y: &mut CaptionStyle, p: &Value) -> Result<()> {
+    match p.get("highlight") {
+        Some(Value::Null) => y.highlight = None,
+        Some(v) => y.highlight = Some(parse_color(v).ok_or_else(|| bad("captions.setStyle", "highlight: \"#rrggbb\" or null"))?),
+        None => {}
+    }
+    match str_p(p, "animation") {
+        Some("none") => y.animation = filmcraft_project::CaptionAnimation::None,
+        Some("fadeIn") => y.animation = filmcraft_project::CaptionAnimation::FadeIn,
+        Some("wordByWord") => y.animation = filmcraft_project::CaptionAnimation::WordByWord,
+        Some(o) => return Err(bad("captions.setStyle", format!("unknown animation `{o}` (none, fadeIn, wordByWord)"))),
+        None => {}
+    }
+    if let Some(b) = bool_p(p, "uppercase") {
+        y.uppercase = b;
+    }
+    Ok(())
+}
+
+/// Caption looks for social video (M3D): (id, name, what it looks like, `captions.setStyle`
+/// params). Sizes are for a 1080-line frame, so a 1080×1920 video draws them 1.8× larger.
+pub const PRESETS: [(&str, &str, &str, &str); 5] = [
+    (
+        "clean",
+        "Clean",
+        "White text on a dark box",
+        r##"{"font":"Inter","fontStyle":"SemiBold","size":40,"color":"#ffffff","background":true,"backgroundColor":"#000000b4","outline":0,"highlight":null,"animation":"none","uppercase":false}"##,
+    ),
+    (
+        "boldPop",
+        "Bold Pop",
+        "Big white capitals with a black outline; the spoken word in yellow",
+        r##"{"font":"Inter","fontStyle":"Bold","size":50,"color":"#ffffff","background":false,"outline":6,"outlineColor":"#000000","highlight":"#ffd60a","animation":"none","uppercase":true}"##,
+    ),
+    (
+        "karaoke",
+        "Karaoke",
+        "White text, the spoken word in green",
+        r##"{"font":"Inter","fontStyle":"Bold","size":46,"color":"#ffffff","background":false,"outline":5,"outlineColor":"#000000","highlight":"#39ff7a","animation":"none","uppercase":false}"##,
+    ),
+    (
+        "wordByWord",
+        "Word by Word",
+        "Words appear as they are spoken",
+        r##"{"font":"Inter","fontStyle":"Bold","size":54,"color":"#ffffff","background":false,"outline":6,"outlineColor":"#000000","highlight":null,"animation":"wordByWord","uppercase":true}"##,
+    ),
+    (
+        "subtle",
+        "Subtle",
+        "Smaller text that fades in",
+        r##"{"font":"Inter","fontStyle":"Medium","size":36,"color":"#ffffff","background":true,"backgroundColor":"#00000080","outline":0,"highlight":null,"animation":"fadeIn","uppercase":false}"##,
+    ),
+];
+
+/// Where social captions sit (M3D): inside the area platforms keep clear of their own buttons and
+/// descriptions (the lower fifth of a 9:16 frame).
+fn position_params(position: &str) -> Option<Value> {
+    Some(match position {
+        "lower" => json!({"anchor": "bottom", "margin": 0.22}),
+        "middle" => json!({"anchor": "middle", "margin": 0.0}),
+        "upper" => json!({"anchor": "top", "margin": 0.15}),
+        _ => return None,
+    })
+}
+
+fn presets_list(_: &mut Session, _: &Value) -> Result<Value> {
+    Ok(
+        json!({"presets": PRESETS.iter().map(|(id, name, what, _)| json!({"id": id, "name": name, "description": what})).collect::<Vec<_>>(), "positions": ["lower", "middle", "upper"]}),
+    )
+}
+
+/// `captions.applyPreset {track?, preset, position?}`: one of [`PRESETS`] (and a safe-area
+/// position) on a caption track, as one undoable step.
+fn apply_preset(s: &mut Session, p: &Value) -> Result<Value> {
+    let cmd = "captions.applyPreset";
+    let id = str_p(p, "preset").ok_or_else(|| bad(cmd, "need `preset` (see captions.presets)"))?;
+    let (_, name, _, style) =
+        PRESETS.iter().find(|x| x.0 == id || x.1.eq_ignore_ascii_case(id)).ok_or_else(|| bad(cmd, format!("unknown preset `{id}` (see captions.presets)")))?;
+    let mut q: Value = serde_json::from_str(style).map_err(|e| EngineError::Other(e.to_string()))?;
+    let pos = str_p(p, "position").unwrap_or("lower");
+    let place = position_params(pos).ok_or_else(|| bad(cmd, format!("unknown position `{pos}` (lower, middle, upper)")))?;
+    for (k, v) in place.as_object().into_iter().flatten() {
+        q[k] = v.clone();
+    }
+    q["reset"] = json!(true);
+    if let Some(t) = p.get("track") {
+        q["track"] = t.clone();
+    }
+    s.edit_group(&format!("Caption Style: {name}"), |s| s.execute("captions.setStyle", q))?;
+    Ok(json!({"preset": id, "position": pos}))
+}
+
 pub fn track_param(s: &Session, p: &Value) -> Option<TrackId> {
     let seq = s.active_sequence()?;
     match p.get("track") {
@@ -255,8 +348,16 @@ fn track_json(s: &Session, t: &CaptionTrack, index: usize) -> Value {
             "align": format!("{:?}", t.style.align).to_lowercase(), "anchor": format!("{:?}", t.style.anchor).to_lowercase(),
             "margin": t.style.margin, "lineSpacing": t.style.line_spacing, "outline": t.style.outline, "outlineColor": hex(t.style.outline_color),
             "fontStyle": t.style.font_style,
+            "highlight": t.style.highlight.map(hex), "animation": t.style.animation, "uppercase": t.style.uppercase,
         },
-        "captions": t.captions.iter().map(|c| caption_json(s, c)).collect::<Vec<_>>(),
+        "captions": t.captions.iter().map(|c| {
+            let mut v = caption_json(s, c);
+            // M3D: each word's time in the sequence (seconds), when the caption has word timings
+            if let Some(words) = t.words.get(&c.id) {
+                v["words"] = json!(words.iter().map(|w| json!({"text": w.text, "start": (c.start + w.start).seconds(), "end": (c.start + w.start + w.duration).seconds()})).collect::<Vec<_>>());
+            }
+            v
+        }).collect::<Vec<_>>(),
     })
 }
 
@@ -361,7 +462,7 @@ pub fn commands() -> Vec<CommandSpec> {
             "Caption Track Style",
             &[],
             None,
-            r##"{"track":id|"C1","font":str?,"fontStyle":str="SemiBold" (Regular, Medium, Bold…)?,"size":f32?,"color":"#rrggbb[aa]"?,"background":bool?,"backgroundColor":"#rrggbbaa"?,"align":"left|center|right"?,"anchor":"top|middle|bottom"?,"margin":0..0.45 (fraction of frame height)?,"lineSpacing":f32?,"outline":f32?,"outlineColor":str?,"reset":bool?}"##,
+            r##"{"track":id|"C1","font":str?,"fontStyle":str="SemiBold" (Regular, Medium, Bold…)?,"size":f32?,"color":"#rrggbb[aa]"?,"background":bool?,"backgroundColor":"#rrggbbaa"?,"align":"left|center|right"?,"anchor":"top|middle|bottom"?,"margin":0..0.45 (fraction of frame height)?,"lineSpacing":f32?,"outline":f32?,"outlineColor":str?,"highlight":"#rrggbb"|null? (the spoken word's colour),"animation":"none|fadeIn|wordByWord"?,"uppercase":bool?,"reset":bool?}"##,
             has_caption_track,
             |s, p| {
                 let tid = track_param(s, p).ok_or_else(|| {
@@ -425,7 +526,7 @@ pub fn commands() -> Vec<CommandSpec> {
                         Some(o) => return Err(bad("captions.setStyle", format!("unknown anchor `{o}`"))),
                         None => {}
                     }
-                    Ok(())
+                    social_style(y, &p)
                 })?;
                 Ok(Value::Null)
             },
@@ -637,6 +738,26 @@ pub fn commands() -> Vec<CommandSpec> {
                 Ok(json!({"tracks": tracks, "selection": s.state.caption_selection.iter().map(|c| c.0).collect::<Vec<_>>()}))
             },
             journal: false,
+        },
+        CommandSpec {
+            id: "captions.presets",
+            label: "Caption Presets",
+            menu: &[],
+            shortcut: None,
+            params: "{}",
+            enabled: always,
+            run: presets_list,
+            journal: false,
+        },
+        CommandSpec {
+            id: "captions.applyPreset",
+            label: "Apply Caption Preset",
+            menu: &[],
+            shortcut: None,
+            params: r#"{"preset":"clean|boldPop|karaoke|wordByWord|subtle","position":"lower|middle|upper"?,"track":id|"C1"?}"#,
+            enabled: has_caption_track,
+            run: apply_preset,
+            journal: true,
         },
     ]
 }

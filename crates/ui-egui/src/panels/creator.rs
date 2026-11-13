@@ -28,7 +28,7 @@ pub const TOOLBAR_H: f32 = 40.0;
 
 /// The Assets panel's tabs: key, label.
 pub const TABS: [(&str, &str); 6] =
-    [("media", "Media"), ("music", "Music"), ("text", "Text"), ("captions", "Captions"), ("transitions", "Transitions"), ("looks", "Looks")];
+    [("media", "Media"), ("music", "Music"), ("text", "Text"), ("captions", "Captions"), ("transitions", "Transitions"), ("looks", "Adjust")];
 
 /// Creator Mode's interface state (serde: the control channel reads and sets it).
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -42,6 +42,16 @@ pub struct State {
     pub tab: String,
     pub title_text: String,
     pub caption_text: String,
+    /// The caption look Auto captions uses (a `captions.presets` id) and where captions sit.
+    pub caption_preset: String,
+    pub caption_position: String,
+    /// Fade length (seconds) for Sound ▸ Fade.
+    pub fade_seconds: f64,
+    /// A caption's text and times being edited in the Captions list (committed when done).
+    #[serde(skip)]
+    pub caption_edit: Option<(u64, String)>,
+    #[serde(skip)]
+    pub caption_times: Option<(u64, f64, f64)>,
     pub export: ExportDialog,
 }
 
@@ -53,6 +63,11 @@ impl Default for State {
             tab: "media".into(),
             title_text: String::new(),
             caption_text: String::new(),
+            caption_preset: "boldPop".into(),
+            caption_position: "lower".into(),
+            fade_seconds: 1.0,
+            caption_edit: None,
+            caption_times: None,
             export: ExportDialog::default(),
         }
     }
@@ -89,12 +104,41 @@ pub fn enter(app: &mut FilmcraftApp) {
         app.set_workspace(WORKSPACE);
     }
     app.ui.mode = Mode::Edit;
+    // magnetic timeline: clips, the playhead and beat markers snap
+    app.session.state.snapping = true;
 }
 
 /// Back to the professional workspace used before Creator Mode.
 pub fn leave(app: &mut FilmcraftApp) {
     let back = Some(app.ui.creator.pro_workspace.clone()).filter(|w| !w.is_empty() && w != WORKSPACE).unwrap_or_else(|| "Editing".into());
     app.set_workspace(&back);
+}
+
+/// Creator Mode keeps every track that has something on it in view (M3D): the video and audio
+/// areas share the height in proportion to their used tracks, and the tracks shrink (to a
+/// minimum) to fit, so music under the video is never scrolled out of sight. `height` is the
+/// tracks area without the divider; `master_h` the master row under the audio tracks.
+pub fn fit_tracks(app: &mut FilmcraftApp, seq: &filmcraft_engine::project::Sequence, height: f32, master_h: f32) {
+    const MIN_H: f32 = 22.0;
+    let used = |tracks: &[filmcraft_engine::project::Track]| tracks.iter().rposition(|t| !t.items.is_empty()).map_or(1, |i| i + 1);
+    let (nv, na) = (used(&seq.video_tracks) as f32, used(&seq.audio_tracks) as f32);
+    let room = (height - master_h).max(1.0);
+    if height <= 1.0 {
+        return;
+    }
+    let tl = &mut app.ui.timeline;
+    tl.split = (nv * room / (height * (nv + na))).clamp(0.2, 0.8);
+    let video_h = tl.split * height;
+    let audio_h = (1.0 - tl.split) * height - master_h;
+    tl.video_track_h = (video_h / nv).clamp(MIN_H, 60.0);
+    tl.audio_track_h = (audio_h / na).clamp(MIN_H, 56.0);
+    // the main track at the bottom of the video area, A1 at the top of the audio area, when it all fits
+    if nv * tl.video_track_h <= video_h + 0.5 {
+        tl.v_scroll = 0.0;
+    }
+    if na * tl.audio_track_h <= audio_h + 0.5 {
+        tl.a_scroll = 0.0;
+    }
 }
 
 fn media_exts() -> Vec<&'static str> {
@@ -218,6 +262,24 @@ pub fn route(app: &mut FilmcraftApp, id: &str, params: &Value) -> Option<Result<
             })
         }
         "creator.exportNow" => export_now(app),
+        "creator.importCaptionsDialog" => app.pick(FileDialog::OpenFile { filter: "Captions".into(), exts: vec!["srt".into(), "vtt".into()] }, |app, paths| {
+            let Some(path) = paths.into_iter().next() else { return Ok(Value::Null) };
+            let r = app.session.execute("captions.import", json!({ "path": path })).map_err(|e| e.to_string())?;
+            let preset = app.ui.creator.caption_preset.clone();
+            let position = app.ui.creator.caption_position.clone();
+            let track = app.session.active_sequence().and_then(|q| q.caption_tracks.last()).map(|t| t.id.0);
+            if let Some(track) = track {
+                app.session.execute("captions.applyPreset", json!({"track": track, "preset": preset, "position": position})).map_err(|e| e.to_string())?;
+            }
+            Ok(r)
+        }),
+        "creator.exportCaptionsDialog" => {
+            let name = app.session.state.active_sequence.and_then(|q| app.session.project.item(q)).map(|i| i.name.clone()).unwrap_or_else(|| "Captions".into());
+            app.pick(FileDialog::SaveAs { filter: "SubRip".into(), exts: vec!["srt".into()], name: format!("{name}.srt"), adds_ext: true }, |app, paths| {
+                let Some(path) = paths.into_iter().next() else { return Ok(Value::Null) };
+                app.session.execute("captions.export", json!({"path": path, "format": "srt"})).map_err(|e| e.to_string())
+            })
+        }
         _ => return None,
     })
 }
@@ -301,7 +363,10 @@ pub fn assets_panel(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
     });
     ui.separator();
     egui::ScrollArea::vertical().id_salt("creator-assets").auto_shrink([false, false]).show(ui, |ui| match app.ui.creator.tab.as_str() {
-        "music" => media_tab(app, ui, true, &mut acts),
+        "music" => {
+            media_tab(app, ui, true, &mut acts);
+            sound_tools(app, ui, &mut acts);
+        }
         "text" => text_tab(app, ui, &mut acts),
         "captions" => captions_tab(app, ui, &mut acts),
         "transitions" => transitions_tab(app, ui, &mut acts),
@@ -415,13 +480,22 @@ fn media_tab(app: &mut FilmcraftApp, ui: &mut egui::Ui, music: bool, acts: &mut 
         hint(ui, &t, if music { tl!("No music in this project yet.") } else { tl!("No clips in this project yet.") });
     }
     let selected = !app.session.state.selection.is_empty();
+    if !items.is_empty() {
+        hint(ui, &t, tl!("Drag a clip onto the timeline to place it there."));
+    }
     for (i, (id, name, _, secs)) in items.iter().enumerate() {
         ui.horizontal(|ui| {
-            let icon = if music { crate::icons::Icon::Speaker } else { crate::icons::Icon::Film };
-            let (r, _) = ui.allocate_exact_size(vec2(16.0, 16.0), Sense::hover());
-            crate::icons::paint(ui.painter(), r, icon, t.text_dim);
-            ui.add(egui::Label::new(format!("{name}  ·  {secs:.1}s")).truncate()).on_hover_text(name.as_str());
+            asset_thumb(app, ui, *id, music);
+            // the name drags the clip to the timeline (the Project panel's drag)
+            let r = ui.add(egui::Label::new(format!("{name}  ·  {secs:.1}s")).truncate().sense(Sense::drag())).on_hover_text(name.as_str());
             let key = if music { "music" } else { "media" };
+            app.auto.add_response(&format!("creator.assets.{key}.{i}.drag"), &r, name);
+            if r.drag_started() {
+                crate::panels::start_drag_item(ui, filmcraft_engine::project::ItemId(*id));
+            }
+            if r.dragged() {
+                ui.ctx().set_cursor_icon(egui::CursorIcon::Grabbing);
+            }
             if small_button(app, ui, &format!("creator.assets.{key}.{i}.add"), tl!("Add"), has_seq) {
                 acts.push(Act::Cmd("creator.addMedia", json!({ "items": [id] })));
             }
@@ -431,6 +505,58 @@ fn media_tab(app: &mut FilmcraftApp, ui: &mut egui::Ui, music: bool, acts: &mut 
             }
         });
     }
+}
+
+/// A clip's picture (or a speaker for music), small, in the Assets list.
+fn asset_thumb(app: &mut FilmcraftApp, ui: &mut egui::Ui, id: u64, music: bool) {
+    let (r, _) = ui.allocate_exact_size(vec2(if music { 16.0 } else { 40.0 }, if music { 16.0 } else { 24.0 }), Sense::hover());
+    let t = app.tokens;
+    if music {
+        crate::icons::paint(ui.painter(), r, crate::icons::Icon::Speaker, t.text_dim);
+        return;
+    }
+    ui.painter().rect_filled(r, 2.0, egui::Color32::from_gray(12));
+    let item = filmcraft_engine::project::ItemId(id);
+    let at = app.session.project.item(item).map(|it| {
+        let d = it.duration().0;
+        it.frame_rate().snap(filmcraft_engine::time::Tick(d.saturating_mul(3) / 10))
+    });
+    let ctx = ui.ctx().clone();
+    match at.and_then(|at| app.thumbnail(&ctx, item, at, 96)) {
+        Some((tex, sz)) => {
+            ui.painter().image(tex, crate::panels::monitor::fit(r, sz.x, sz.y), Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)), egui::Color32::WHITE);
+        }
+        None => crate::icons::paint(ui.painter(), r.shrink(4.0), crate::icons::Icon::Film, t.text_dim),
+    }
+}
+
+/// Sound (M3D): fades, music lowered under speech, beat markers, cleaner voice. One undo step each.
+fn sound_tools(app: &mut FilmcraftApp, ui: &mut egui::Ui, acts: &mut Vec<Act>) {
+    let t = app.tokens;
+    let has_seq = app.session.active_sequence().is_some();
+    let has_music = app.session.active_sequence().is_some_and(|q| q.audio_tracks.iter().skip(1).any(|tr| !tr.items.is_empty()));
+    ui.add_space(8.0);
+    ui.label(egui::RichText::new(tl!("Sound")).strong());
+    ui.horizontal(|ui| {
+        let mut secs = app.ui.creator.fade_seconds;
+        if small_button(app, ui, "creator.assets.fade", tl!("Fade in and out"), has_music) {
+            acts.push(Act::Cmd("creator.fade", json!({"edge": "both", "seconds": secs})));
+        }
+        let r = ui.add(egui::DragValue::new(&mut secs).speed(0.05).range(0.1..=5.0).max_decimals(1).suffix("s"));
+        app.auto.add_response("creator.assets.fadeSeconds", &r, tl!("Fade length"));
+        app.ui.creator.fade_seconds = secs;
+    });
+    if small_button(app, ui, "creator.assets.duck", tl!("Lower music when someone speaks"), has_music) {
+        acts.push(Act::Cmd("creator.duckMusic", json!({})));
+    }
+    if small_button(app, ui, "creator.assets.beats", tl!("Mark the beats"), has_music) {
+        acts.push(Act::Cmd("creator.beatMarkers", json!({})));
+    }
+    hint(ui, &t, tl!("Markers on the music's beats; clips snap to them when you trim or move."));
+    if small_button(app, ui, "creator.assets.cleanVoice", tl!("Reduce background noise"), has_seq) {
+        acts.push(Act::Cmd("creator.cleanVoice", json!({})));
+    }
+    hint(ui, &t, tl!("On the selected clips' sound, or all of the video's sound. Select a clip to change its volume in Properties."));
 }
 
 fn text_tab(app: &mut FilmcraftApp, ui: &mut egui::Ui, acts: &mut Vec<Act>) {
@@ -449,21 +575,152 @@ fn text_tab(app: &mut FilmcraftApp, ui: &mut egui::Ui, acts: &mut Vec<Act>) {
 
 fn captions_tab(app: &mut FilmcraftApp, ui: &mut egui::Ui, acts: &mut Vec<Act>) {
     let t = app.tokens;
-    hint(ui, &t, tl!("A caption appears at the playhead for 3 seconds. Captions are burned into the exported video."));
+    let has_seq = app.session.active_sequence().is_some();
+    let has_caps = app.session.active_sequence().is_some_and(|q| !q.caption_tracks.is_empty());
+    let (preset, position) = (app.ui.creator.caption_preset.clone(), app.ui.creator.caption_position.clone());
+    let ready = filmcraft_engine::transcript::speech_model_ready(&app.session);
+    if big_button(app, ui, "creator.assets.autoCaptions", tl!("Auto captions"), has_seq && ready == Some(true)) {
+        acts.push(Act::Cmd("creator.autoCaptions", json!({"preset": preset, "position": position})));
+    }
+    match ready {
+        Some(true) => hint(ui, &t, tl!("Captions from what is said, timed word by word. Takes a moment for a long video.")),
+        Some(false) => speech_model_offer(app, ui, acts),
+        None => hint(ui, &t, tl!("This build has no speech-to-text: add captions by hand or import an SRT file.")),
+    }
+    ui.add_space(6.0);
+    caption_look(app, ui, acts, has_caps);
+    ui.add_space(6.0);
+    ui.label(egui::RichText::new(tl!("Add a caption")).strong());
     let mut text = app.ui.creator.caption_text.clone();
     let r = ui.add(egui::TextEdit::multiline(&mut text).hint_text(tl!("What is said")).desired_rows(2).desired_width(ui.available_width().min(260.0)));
     app.auto.add_response("creator.assets.captionText", &r, tl!("Caption text"));
     app.ui.creator.caption_text = text.clone();
-    let has_seq = app.session.active_sequence().is_some();
-    if big_button(app, ui, "creator.assets.addCaption", tl!("Add caption"), has_seq && !text.trim().is_empty()) {
+    if small_button(app, ui, "creator.assets.addCaption", tl!("Add at the playhead"), has_seq && !text.trim().is_empty()) {
         acts.push(Act::Cmd("captions.add", json!({"text": text.trim(), "durationSeconds": 3})));
         app.ui.creator.caption_text.clear();
     }
-    ui.add_space(8.0);
-    if small_button(app, ui, "creator.assets.autoCaptions", tl!("Captions from speech"), has_seq) {
-        acts.push(Act::Cmd("transcript.createCaptions", json!({})));
+    ui.horizontal(|ui| {
+        if small_button(app, ui, "creator.assets.importSrt", tl!("Import SRT…"), has_seq) {
+            acts.push(Act::Ui("creator.importCaptionsDialog", json!({})));
+        }
+        if small_button(app, ui, "creator.assets.exportSrt", tl!("Export SRT…"), has_caps) {
+            acts.push(Act::Ui("creator.exportCaptionsDialog", json!({})));
+        }
+    });
+    ui.add_space(6.0);
+    caption_list(app, ui, acts);
+}
+
+/// No speech model yet: download it in the background (one time), with its progress.
+fn speech_model_offer(app: &mut FilmcraftApp, ui: &mut egui::Ui, acts: &mut Vec<Act>) {
+    let t = app.tokens;
+    let job = app.session.jobs.iter().find(|j| j.label.starts_with("Download speech model")).map(|j| {
+        (
+            j.progress.fraction(),
+            j.progress.finished.load(std::sync::atomic::Ordering::Relaxed),
+            j.progress.error.lock().unwrap_or_else(|e| e.into_inner()).clone(),
+        )
+    });
+    match job {
+        Some((f, false, _)) => {
+            ui.add(egui::ProgressBar::new(f).desired_width(ui.available_width().min(260.0)).show_percentage());
+            hint(ui, &t, tl!("Downloading the speech model. You can keep editing."));
+            ui.ctx().request_repaint_after(std::time::Duration::from_millis(250));
+        }
+        other => {
+            if let Some((_, true, Some(e))) = other {
+                hint(ui, &t, &tlf!("The download failed: {e}", e = e));
+            }
+            hint(ui, &t, tl!("Auto captions need a speech model, downloaded once (about 150 MB)."));
+            if small_button(app, ui, "creator.assets.downloadSpeech", tl!("Download speech model"), true) {
+                acts.push(Act::Cmd("transcript.downloadModel", json!({"background": true})));
+            }
+        }
     }
-    hint(ui, &t, tl!("Needs a speech-to-text model (Settings ▸ Media Analysis & Transcription)."));
+}
+
+/// Caption looks and where captions sit (M3D): applied to the captions at once when there are some.
+fn caption_look(app: &mut FilmcraftApp, ui: &mut egui::Ui, acts: &mut Vec<Act>, has_caps: bool) {
+    ui.label(egui::RichText::new(tl!("Style")).strong());
+    ui.horizontal_wrapped(|ui| {
+        for (id, name, what, _) in filmcraft_engine::captions::PRESETS {
+            let r = ui.selectable_label(app.ui.creator.caption_preset == id, crate::i18n::t(name)).on_hover_text(crate::i18n::t(what));
+            app.auto.add_response(&format!("creator.assets.captionPreset.{id}"), &r, name);
+            if r.clicked() {
+                app.ui.creator.caption_preset = id.to_string();
+                if has_caps {
+                    acts.push(Act::Cmd("captions.applyPreset", json!({"preset": id, "position": app.ui.creator.caption_position})));
+                }
+            }
+        }
+    });
+    ui.horizontal(|ui| {
+        ui.label(tl!("Position"));
+        for (id, name) in [("lower", tl!("Lower")), ("middle", tl!("Middle")), ("upper", tl!("Upper"))] {
+            let r = ui.selectable_label(app.ui.creator.caption_position == id, name);
+            app.auto.add_response(&format!("creator.assets.captionPosition.{id}"), &r, name);
+            if r.clicked() {
+                app.ui.creator.caption_position = id.to_string();
+                if has_caps {
+                    acts.push(Act::Cmd("captions.applyPreset", json!({"preset": app.ui.creator.caption_preset, "position": id})));
+                }
+            }
+        }
+    });
+    hint(ui, &app.tokens, tl!("Lower keeps captions above the app's buttons and description."));
+}
+
+/// Every caption of the first caption track: its time (click to go there), its text and its
+/// start and end, edited in place. One undo step per change.
+fn caption_list(app: &mut FilmcraftApp, ui: &mut egui::Ui, acts: &mut Vec<Act>) {
+    const MAX_ROWS: usize = 400;
+    let Some(q) = app.session.active_sequence() else { return };
+    let Some(tr) = q.caption_tracks.first() else { return };
+    let caps: Vec<(u64, f64, f64, String)> =
+        tr.captions.iter().take(MAX_ROWS).map(|c| (c.id.0, c.start.seconds(), (c.start + c.duration).seconds(), c.text.clone())).collect();
+    if caps.is_empty() {
+        return;
+    }
+    ui.label(egui::RichText::new(tlf!("{n} captions", n = tr.captions.len())).strong());
+    let w = ui.available_width().min(260.0);
+    for (i, (id, start, end, text)) in caps.into_iter().enumerate() {
+        ui.horizontal(|ui| {
+            let r = ui.small_button(format!("{start:.1}s"));
+            app.auto.add_response(&format!("creator.assets.caption.{i}.go"), &r, tl!("Go to caption"));
+            if r.clicked() {
+                acts.push(Act::Cmd("playhead.set", json!({"seconds": start})));
+                acts.push(Act::Cmd("captions.select", json!({"captions": [id]})));
+            }
+            let (mut a, mut b) = app.ui.creator.caption_times.filter(|x| x.0 == id).map_or((start, end), |x| (x.1, x.2));
+            let ra = ui.add(egui::DragValue::new(&mut a).speed(0.01).range(0.0..=b - 0.05).max_decimals(2).suffix("s"));
+            let rb = ui.add(egui::DragValue::new(&mut b).speed(0.01).range(a + 0.05..=f64::MAX).max_decimals(2).suffix("s"));
+            app.auto.add_response(&format!("creator.assets.caption.{i}.start"), &ra, tl!("Caption start"));
+            app.auto.add_response(&format!("creator.assets.caption.{i}.end"), &rb, tl!("Caption end"));
+            if ra.changed() || rb.changed() {
+                app.ui.creator.caption_times = Some((id, a, b));
+            }
+            let done = ra.drag_stopped() || rb.drag_stopped() || ra.lost_focus() || rb.lost_focus();
+            if done && app.ui.creator.caption_times.is_some_and(|x| x.0 == id) {
+                app.ui.creator.caption_times = None;
+                if (a - start).abs() > 1e-6 || (b - end).abs() > 1e-6 {
+                    acts.push(Act::Cmd("captions.setTimes", json!({"caption": id, "startSeconds": a, "endSeconds": b})));
+                }
+            }
+        });
+        let mut edit = app.ui.creator.caption_edit.as_ref().filter(|x| x.0 == id).map_or_else(|| text.clone(), |x| x.1.clone());
+        let r = ui.add(egui::TextEdit::singleline(&mut edit).desired_width(w));
+        app.auto.add_response(&format!("creator.assets.caption.{i}.text"), &r, tl!("Caption text"));
+        if r.changed() {
+            app.ui.creator.caption_edit = Some((id, edit.clone()));
+        }
+        if r.lost_focus() && app.ui.creator.caption_edit.as_ref().is_some_and(|x| x.0 == id) {
+            app.ui.creator.caption_edit = None;
+            if edit.trim() != text && !edit.trim().is_empty() {
+                acts.push(Act::Cmd("captions.setText", json!({"caption": id, "text": edit.trim()})));
+            }
+        }
+        ui.add_space(2.0);
+    }
 }
 
 fn transitions_tab(app: &mut FilmcraftApp, ui: &mut egui::Ui, acts: &mut Vec<Act>) {
@@ -477,6 +734,27 @@ fn transitions_tab(app: &mut FilmcraftApp, ui: &mut egui::Ui, acts: &mut Vec<Act
     }
 }
 
+/// Speed and steadiness of the selected clips (M3D); size, position, rotation, opacity and their
+/// keyframes are in Properties.
+fn adjust_tools(app: &mut FilmcraftApp, ui: &mut egui::Ui, acts: &mut Vec<Act>) {
+    let t = app.tokens;
+    let sel: Vec<u64> = app.session.state.selection.iter().map(|c| c.0).collect();
+    ui.label(egui::RichText::new(tl!("Speed")).strong());
+    ui.horizontal(|ui| {
+        for (pct, label) in [(50.0, "0.5×"), (100.0, "1×"), (150.0, "1.5×"), (200.0, "2×")] {
+            if small_button(app, ui, &format!("creator.assets.speed.{}", pct as u32), label, !sel.is_empty()) {
+                acts.push(Act::Cmd("creator.speed", json!({"clips": sel, "speed": pct})));
+            }
+        }
+    });
+    if small_button(app, ui, "creator.assets.stabilize", tl!("Steady shaky footage"), !sel.is_empty()) {
+        acts.push(Act::Cmd("effects.apply", json!({"clips": sel, "effect": "warp_stabilizer"})));
+    }
+    hint(ui, &t, tl!("For the selected clips. Size, position, rotation, opacity and keyframes are in Properties."));
+    ui.add_space(8.0);
+    ui.label(egui::RichText::new(tl!("Looks")).strong());
+}
+
 fn looks_tab(app: &mut FilmcraftApp, ui: &mut egui::Ui, acts: &mut Vec<Act>) {
     let t = app.tokens;
     hint(ui, &t, tl!("A look changes the colour of the selected clips, or of every clip when none is selected."));
@@ -486,6 +764,7 @@ fn looks_tab(app: &mut FilmcraftApp, ui: &mut egui::Ui, acts: &mut Vec<Act>) {
     } else {
         app.session.state.selection.iter().map(|c| c.0).collect()
     };
+    adjust_tools(app, ui, acts);
     let mut folder = "";
     for p in filmcraft_render::lumetri_presets::presets() {
         if p.folder != folder {
@@ -518,7 +797,7 @@ pub fn toolbar(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
     let buttons: [(&str, &str, &str, &'static str, Value, bool, bool); 11] = [
         ("undo", tl!("Undo"), tl!("Undo the last change"), "edit.undo", json!({}), can_undo, false),
         ("redo", tl!("Redo"), tl!("Redo"), "edit.redo", json!({}), can_redo, false),
-        ("split", tl!("Split"), tl!("Cut the clip in two at the playhead"), "sequence.addEdit", json!({}), has_seq, false),
+        ("split", tl!("Split"), tl!("Cut the clip in two at the playhead"), "creator.split", json!({}), has_seq, false),
         (
             "trimStart",
             tl!("Trim start"),

@@ -295,3 +295,206 @@ fn smooth_editing_makes_editing_copies_of_heavy_clips_only() {
     assert!(!s.media.use_proxies());
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// Captions over each clip: text, start and end (seconds), sorted by start.
+fn captions_of(s: &Session) -> Vec<(String, f64, f64)> {
+    let q = s.active_sequence().unwrap();
+    let mut v: Vec<_> = q.caption_tracks[0].captions.iter().map(|c| (c.text.clone(), c.start.seconds(), (c.start + c.duration).seconds())).collect();
+    v.sort_by(|a, b| a.1.total_cmp(&b.1));
+    v
+}
+
+fn near(a: f64, b: f64) -> bool {
+    (a - b).abs() < 0.03
+}
+
+#[test]
+fn captions_follow_the_footage_through_trim_delete_and_move() {
+    let dir = tmp_dir("fc_creator_caps");
+    // c1 [0, 1) c2 [1, 2.5) c3 [2.5, 3.5) at 24 fps
+    let paths = clips(&dir, &["c1.mp4", "c2.mp4", "c3.mp4"]);
+    let mut s = Session::default();
+    s.execute("creator.newVideo", json!({"aspect": "9:16", "paths": paths})).unwrap();
+    s.execute("captions.newTrack", json!({"format": "Subtitle"})).unwrap();
+    for (text, at, len) in [("one", 0.25, 0.5), ("two", 1.25, 0.5), ("three", 2.0, 0.5), ("four", 2.75, 0.5)] {
+        s.execute("captions.add", json!({"text": text, "seconds": at, "durationSeconds": len})).unwrap();
+    }
+    // word timings on "three" (two words), to see that they move with it
+    let three = s.active_sequence().unwrap().caption_tracks[0].captions.iter().find(|c| c.text == "three").unwrap().id;
+    s.edit_sequence("words", |q, _, _| {
+        let w = |text: &str, a: f64, b: f64| filmcraft_project::CaptionWord {
+            text: text.into(),
+            start: filmcraft_time::Tick::from_seconds_f64(a),
+            duration: filmcraft_time::Tick::from_seconds_f64(b),
+        };
+        q.caption_tracks[0].words.insert(three, vec![w("thr", 0.0, 0.25), w("ee", 0.25, 0.25)]);
+        Ok(())
+    })
+    .unwrap();
+    let id_of = |s: &Session, name: &str| s.active_sequence().unwrap().video_tracks[0].items.iter().find(|i| i.name == name).unwrap().id.0;
+
+    // trim the first half second off c2: its captions move 0.5 s earlier with the picture
+    s.execute("playhead.set", json!({"seconds": 1.5})).unwrap();
+    s.execute("timeline.select", json!({"clips": [id_of(&s, "c2.mp4")]})).unwrap();
+    let undo0 = s.history.undo.len();
+    s.execute("creator.trimToPlayhead", json!({"side": "start"})).unwrap();
+    assert_eq!(s.history.undo.len(), undo0 + 1, "one undo step, captions included");
+    let c = captions_of(&s);
+    assert_eq!(c.len(), 4, "{c:?}");
+    assert!(near(c[0].1, 0.25) && near(c[0].2, 0.75), "before the edit: unchanged {c:?}");
+    // "two" was [1.25, 1.75): its first quarter second was cut, so it starts at the cut (1.0)
+    assert!(near(c[1].1, 1.0) && near(c[1].2, 1.25), "{c:?}");
+    assert!(near(c[2].1, 1.5) && near(c[2].2, 2.0), "{c:?}");
+    assert!(near(c[3].1, 2.25) && near(c[3].2, 2.75), "{c:?}");
+    let words = s.active_sequence().unwrap().caption_tracks[0].words.get(&three).cloned().unwrap();
+    assert_eq!(words.len(), 2);
+    assert!(near(words[1].start.seconds(), 0.25), "words stay relative to their caption");
+
+    // delete c1: "one" (over c1 only) goes, everything else moves 1 s earlier
+    s.execute("timeline.select", json!({"clips": [id_of(&s, "c1.mp4")]})).unwrap();
+    s.execute("creator.delete", json!({})).unwrap();
+    let c = captions_of(&s);
+    assert_eq!(c.iter().map(|x| x.0.as_str()).collect::<Vec<_>>(), vec!["two", "three", "four"], "{c:?}");
+    assert!(near(c[0].1, 0.0) && near(c[1].1, 0.5) && near(c[2].1, 1.25), "{c:?}");
+    assert!(!s.active_sequence().unwrap().caption_tracks[0].captions.iter().any(|x| x.text == "one"));
+
+    // move c3 (now [1, 2)) to the front: "four" goes with it
+    s.execute("creator.moveClip", json!({"clip": id_of(&s, "c3.mp4"), "time": 0})).unwrap();
+    assert_eq!(v1_names(&s), vec!["c3.mp4", "c2.mp4"]);
+    let c = captions_of(&s);
+    assert_eq!(c[0].0, "four", "{c:?}");
+    assert!(near(c[0].1, 0.25) && near(c[0].2, 0.75), "{c:?}");
+    assert!(near(c[1].1, 1.0) && near(c[2].1, 1.5), "{c:?}");
+    s.active_sequence().unwrap().check().unwrap();
+
+    // undo puts the captions back with the clips, all the way
+    for _ in 0..3 {
+        s.execute("edit.undo", json!({})).unwrap();
+    }
+    let c = captions_of(&s);
+    assert_eq!(c.len(), 4);
+    assert!(near(c[1].1, 1.25) && near(c[3].1, 2.75), "{c:?}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn caption_presets_style_the_track_in_one_undo_step() {
+    let mut s = Session::default();
+    s.execute("file.openDemoProject", json!({})).unwrap();
+    s.execute("captions.newTrack", json!({"format": "Subtitle"})).unwrap();
+    let list = s.execute("captions.presets", json!({})).unwrap();
+    assert_eq!(list["presets"].as_array().unwrap().len(), 5);
+    let undo0 = s.history.undo.len();
+    s.execute("captions.applyPreset", json!({"preset": "boldPop", "position": "middle"})).unwrap();
+    assert_eq!(s.history.undo.len(), undo0 + 1);
+    let st = s.active_sequence().unwrap().caption_tracks[0].style.clone();
+    assert!(st.uppercase && st.highlight.is_some() && st.anchor == filmcraft_project::CaptionAnchor::Middle);
+    s.execute("captions.applyPreset", json!({"preset": "Word by Word"})).unwrap();
+    let st = s.active_sequence().unwrap().caption_tracks[0].style.clone();
+    assert_eq!(st.animation, filmcraft_project::CaptionAnimation::WordByWord);
+    assert!(st.highlight.is_none(), "a preset replaces the whole look");
+    assert!(st.margin > 0.2, "lower: above the platform's buttons and description");
+    assert!(s.execute("captions.applyPreset", json!({"preset": "nope"})).is_err());
+    assert!(s.execute("captions.applyPreset", json!({"preset": "clean", "position": "left"})).is_err());
+    s.execute("edit.undo", json!({})).unwrap();
+    assert!(s.active_sequence().unwrap().caption_tracks[0].style.uppercase);
+}
+
+#[test]
+fn auto_captions_transcribe_caption_with_word_timings_and_style_in_one_step() {
+    use filmcraft_project::{Transcript, Word};
+    use filmcraft_speech::FixedTranscriber;
+    use filmcraft_time::Tick;
+    let mut s = Session::default();
+    s.execute("file.openDemoProject", json!({})).unwrap();
+    // no speech model: a clear error and nothing changed
+    let undo0 = s.history.undo.len();
+    if s.transcriber.is_none() && !filmcraft_speech::available() {
+        let e = s.execute("creator.autoCaptions", json!({})).unwrap_err().to_string();
+        assert!(e.to_lowercase().contains("speech"), "{e}");
+        assert_eq!(s.history.undo.len(), undo0);
+    }
+    let mut t = Transcript { language: "en".into(), ..Default::default() };
+    for (i, w) in ["Make", "every", "second", "count", "today"].iter().enumerate() {
+        let a = 0.2 + i as f64 * 0.4;
+        t.words.push(Word::new(*w, Tick::from_seconds_f64(a), Tick::from_seconds_f64(a + 0.35)));
+    }
+    s.transcriber = Some(std::sync::Arc::new(FixedTranscriber { transcript: t, id: "fixed".into() }));
+    let r = s.execute("creator.autoCaptions", json!({"preset": "karaoke"})).unwrap();
+    assert_eq!(r["transcribed"], true, "{r}");
+    assert_eq!(s.history.undo.len(), undo0 + 1, "one undo step");
+    let q = s.active_sequence().unwrap();
+    let tr = q.caption_tracks.last().unwrap();
+    assert!(!tr.captions.is_empty());
+    assert!(tr.style.highlight.is_some(), "karaoke: the spoken word is coloured");
+    // every caption has its words, each inside the caption
+    for c in &tr.captions {
+        let words = tr.words.get(&c.id).unwrap();
+        assert_eq!(words.len(), c.text.split_whitespace().count(), "{:?} {words:?}", c.text);
+        assert!(words.iter().all(|w| w.start + w.duration <= c.duration + Tick(1)), "{words:?}");
+        assert!(c.text.len() <= 24 + 8);
+    }
+    // saved and reopened: the words and the look are kept
+    let dir = tmp_dir("fc_creator_autocap");
+    let path = dir.join("cap.filmcraft").to_string_lossy().to_string();
+    s.execute("file.saveAs", json!({"path": path})).unwrap();
+    let (words, style) = {
+        let tr = s.active_sequence().unwrap().caption_tracks.last().unwrap();
+        (tr.words.clone(), tr.style.clone())
+    };
+    let mut t2 = Session::default();
+    t2.execute("file.open", json!({"path": path})).unwrap();
+    let tr = t2.active_sequence().unwrap().caption_tracks.last().unwrap();
+    assert_eq!(tr.words, words);
+    assert_eq!(tr.style, style);
+    let _ = std::fs::remove_dir_all(&dir);
+    s.execute("edit.undo", json!({})).unwrap();
+    assert!(s.active_sequence().unwrap().caption_tracks.iter().all(|t| t.name != "Captions"));
+}
+
+#[test]
+fn speed_ripples_the_main_track_and_captions_follow() {
+    let dir = tmp_dir("fc_creator_speed");
+    // s1 [0, 1) s2 [1, 2.5)
+    let paths = clips(&dir, &["s1.mp4", "s2.mp4"]);
+    let mut s = Session::default();
+    s.execute("creator.newVideo", json!({"aspect": "9:16", "paths": paths})).unwrap();
+    s.execute("captions.newTrack", json!({"format": "Subtitle"})).unwrap();
+    s.execute("captions.add", json!({"text": "early", "seconds": 0.5, "durationSeconds": 0.25})).unwrap();
+    s.execute("captions.add", json!({"text": "late", "seconds": 1.5, "durationSeconds": 0.5})).unwrap();
+    let s1 = s.active_sequence().unwrap().video_tracks[0].items.iter().find(|i| i.name == "s1.mp4").unwrap().id.0;
+    let undo0 = s.history.undo.len();
+    s.execute("creator.speed", json!({"clips": [s1], "speed": 200})).unwrap();
+    assert_eq!(s.history.undo.len(), undo0 + 1);
+    let mut items: Vec<_> = s.active_sequence().unwrap().video_tracks[0].items.iter().map(|i| (i.start.seconds(), i.end().seconds())).collect();
+    items.sort_by(|a, b| a.0.total_cmp(&b.0));
+    assert!(near(items[0].1, 0.5) && near(items[1].0, 0.5), "s1 is half as long and s2 follows: {items:?}");
+    let c = captions_of(&s);
+    // "early" was 0.5 s into s1's footage → 0.25 s at double speed, 0.125 s long
+    assert!(near(c[0].1, 0.25) && near(c[0].2, 0.375), "{c:?}");
+    assert!(near(c[1].1, 1.0) && near(c[1].2, 1.5), "{c:?}");
+    assert!(s.execute("creator.speed", json!({"clips": [s1], "speed": 5})).is_err());
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn split_cuts_the_main_clip_and_its_sound_but_not_the_music() {
+    let dir = tmp_dir("fc_creator_split");
+    let paths = clips(&dir, &["p1.mp4", "p2.mp4"]);
+    let music = dir.join("song.mp4");
+    make_movie(&music, filmcraft_media::DemoScene::Plasma, 64, 112, 200);
+    let mut s = Session::default();
+    s.execute("creator.newVideo", json!({"aspect": "9:16", "paths": paths})).unwrap();
+    let song = s.execute("file.import", json!({"paths": [music.to_string_lossy()]})).unwrap()["items"][0].as_u64().unwrap();
+    s.execute("timeline.place", json!({"item": song, "audioTrack": "A2", "time": 0, "video": false})).unwrap();
+    s.execute("playhead.set", json!({"seconds": 0.5})).unwrap();
+    s.state.selection.clear();
+    let undo0 = s.history.undo.len();
+    s.execute("creator.split", json!({})).unwrap();
+    assert_eq!(s.history.undo.len(), undo0 + 1);
+    let q = s.active_sequence().unwrap();
+    assert_eq!(q.video_tracks[0].items.len(), 3, "the clip under the playhead is cut");
+    assert_eq!(q.audio_tracks[0].items.len(), 3, "and its sound");
+    assert_eq!(q.audio_tracks[1].items.len(), 1, "the music is not cut");
+    let _ = std::fs::remove_dir_all(&dir);
+}

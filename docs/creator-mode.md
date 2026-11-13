@@ -24,19 +24,56 @@ selected; there is no import page to leave.
 
 | Area | What it does |
 |---|---|
-| **Assets** | Media (Add media…, add or replace with a project clip), Music (Add music…), Text (add a title at the playhead), Captions (add a caption at the playhead; captions from speech when a speech-to-text model is installed), Transitions (a cross dissolve or dip to black at every cut), Looks (colour looks for the selected clips, or every clip) |
+| **Assets** | Media (Add media…, a thumbnail per clip; drag a clip onto the Timeline, add it at the end or replace the selected clip with it), Music (Add music…, and Sound: fade in and out, lower the music when someone speaks, mark the beats, reduce background noise), Text (add a title at the playhead), Captions (Auto captions, caption looks and positions, add a caption, Import / Export SRT, every caption's text, start and end), Transitions (a cross dissolve or dip to black at every cut), Adjust (speed 0.5×–2×, steady shaky footage, colour looks for the selected clips, or every clip) |
 | **Program** | the video, with play, the playhead and the safe-area overlays of the Pro monitor |
 | **Properties** | what the selected thing has: a clip's size, position, opacity, volume and speed; a title's font, size and colour; a caption's text |
-| **Timeline** | drag clips to move them, drag a clip's edge to trim it, drop files to add them; the toolbar above it |
+| **Timeline** | drag clips to move them, drag a clip's edge to trim it, drop files or Assets clips to add them; the toolbar above it. Snapping is on (clips, the playhead and markers, beat markers included). Thumbnails and waveforms on the clips. The tracks resize so every track with something on it stays in view: the music under the video is never scrolled out of sight |
 
-The toolbar: **Undo**, **Redo**, **Split** (cut the clip at the playhead), **Trim start** /
+The toolbar: **Undo**, **Redo**, **Split** (cut the selected clip, or the main-track clip under the playhead, and its own sound at the playhead; music and titles are not cut), **Trim start** /
 **Trim end** (remove the part of the clip before / after the playhead and close the gap),
 **Delete** (remove the selected clips and close the gap; also the Delete key in Creator Mode),
 **Replace…** (another file in the selected clip's place, same length), **+ Media**, **+ Text**,
 **Pro**, and **Export video**.
 
 Files dropped on the window in Creator Mode are added at the end of the video, in file-name order;
-dropped on the Timeline they go where they are dropped.
+dropped on the Timeline they go where they are dropped. Music goes on the first empty audio track
+under the clips' sound (A2 in a new video).
+
+**Shortcuts** (the same as Pro): Space play / pause, ← → one frame, Cmd/Ctrl+K split at the playhead,
+Delete delete the selected clips and close the gap, Cmd/Ctrl+Z / Shift+Cmd/Ctrl+Z undo / redo, S
+snapping on / off, = and − zoom, \ the whole video.
+
+## Captions
+
+**Auto captions** (Assets ▸ Captions) transcribes the video's speech with the installed
+speech-to-text model (Settings ▸ Media Analysis & Transcription). Without one, the tab offers
+**Download speech model** (about 150 MB, once, in the background with its progress; editing goes
+on meanwhile). It makes short one-line captions (24 characters, at most 2.5 s each) with the time of every
+word, and gives them the chosen look, all as one undo step.
+
+| Look | |
+|---|---|
+| Clean | white text on a dark box |
+| Bold Pop | big white capitals with a black outline; the spoken word in yellow |
+| Karaoke | white text, the spoken word in green |
+| Word by Word | words appear as they are spoken |
+| Subtle | smaller text that fades in |
+
+Positions: **Lower** (the default: above the bottom fifth of a 9:16 frame, where the apps put their
+buttons and description), **Middle**, **Upper**. A look or position applies to the captions at once.
+The spoken word's highlight and Word by Word use the word timings (or, for captions typed or
+imported without them, the caption's time shared by word length). The monitor and the export draw
+captions with the same code, so the preview is what is exported.
+
+Each caption's text, start and end can be changed in the list (one undo step per change), on the
+Timeline's caption track, or in Properties. **Import SRT…** / **Export SRT…** read and write SubRip
+files (WebVTT too).
+
+**Captions follow the footage.** Trim start / end, Delete, dragging a clip's edge, moving a clip and
+changing its speed in Creator Mode move every caption with the words it belongs to: a caption over
+a later clip moves with that clip; one whose footage is cut is shortened to what is left, or
+removed when nothing is left; words keep their timing inside their caption. Captions over a gap
+move with the next clip. It is part of the same undo step as the edit.
 
 **4K footage.** When the video has clips larger than 1080p-class (more than 2.5 megapixels: 4K
 phone video), Assets ▸ Media offers **Make editing copies**: small ProRes copies (¼ size) made in the
@@ -72,7 +109,22 @@ Every Creator action is a command, for agents and scripts as much as for the int
 | `creator.transitions {effect?, frames?}` | a transition at every cut of the main video track. One undo step |
 | `creator.exportPresets` / `creator.export {preset?, name?, folder?, overwrite?, burnCaptions?, hardwareAcceleration?, wait?, maxThreads?}` | social export with one extension and no overwriting (`maxThreads` caps its threads) |
 | `creator.smoothEditing {on, wait?}` / `creator.smoothEditingStatus` | editing copies of 4K clips for the monitors |
+| `creator.split` | cut the selected or main-track clip and its sound at the playhead (not the music) |
+| `transcript.downloadModel {model?, background: true}` | the speech model downloaded as a job |
+| `creator.trim {clip, edge, delta}`, `creator.delete {clips?}`, `creator.moveClip {clip, time}`, `creator.speed {clips?, speed}` | ripple edits of the main track; captions follow the footage. One undo step each |
+| `creator.autoCaptions {preset?, position?, model?, language?, maxChars?}` | transcribe if needed, captions with word timings, a look. One undo step |
+| `captions.presets` / `captions.applyPreset {preset, position?, track?}` | caption looks (`clean`, `boldPop`, `karaoke`, `wordByWord`, `subtle`) in a safe-area position (`lower`, `middle`, `upper`) |
+| `captions.setStyle {…, highlight?, animation?, uppercase?}` | also the spoken word's colour, `none` / `fadeIn` / `wordByWord`, capitals |
+| `creator.fade {clips?, edge?, seconds?}` | fade the music (or the selected sound) in and out (audio transitions) |
+| `creator.duckMusic {clips?, reduceDb?}` | the music lowered while someone speaks (Essential Sound ducking keyframes) |
+| `creator.beatMarkers {clip?}` | sequence markers on the music's beats (`analyze.beats`); snapping on |
+| `creator.cleanVoice {clips?, amount?}` | noise reduction on the video's sound (Essential Sound ▸ Repair) |
 | `view.creatorMode {on?}`, `creator.start`, `creator.chooseClips {aspect, paths?}`, `creator.exportDialog` | the interface (UI commands) |
+
+Claude uses these commands too, through the same co-editing rules as everything else
+([co-editing](co-editing.md)): one undo step labelled "Claude: …" per command or transaction, protected
+clips and tracks refused (a ripple that would move protected captions is refused as a whole), the
+activity log and the version snapshots.
 
 Editing in Creator Mode uses the same commands as the Pro workspace (`sequence.addEdit`,
 `edit.rippleDelete`, `clip.replaceFromBin`, `graphics.newText`, `captions.add`,

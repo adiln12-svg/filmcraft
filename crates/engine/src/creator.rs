@@ -223,7 +223,11 @@ fn place_in_order(s: &mut Session, visual: &[ItemId], audio: &[ItemId], at: Tick
     for item in audio {
         // music as long as the video (a longer song is cut at its end; drag its end to change)
         let len = s.project.item(*item).map(|i| i.duration()).unwrap_or_default();
-        let mut q = json!({"item": item.0, "audioTrack": "new", "time": 0, "video": false});
+        // on the first empty audio track under the clips' sound (A2 in a new video), else a new one
+        let free = s
+            .active_sequence()
+            .and_then(|q| q.audio_tracks.iter().enumerate().skip(1).find(|(_, t)| t.items.is_empty() && !t.locked).map(|(i, _)| format!("A{}", i + 1)));
+        let mut q = json!({"item": item.0, "audioTrack": free.unwrap_or_else(|| "new".into()), "time": 0, "video": false});
         if video > Tick::ZERO && len > video {
             q["duration"] = json!(video.0);
         }
@@ -321,6 +325,7 @@ fn main_tracks_only<R>(s: &mut Session, clips: &[filmcraft_project::ClipId], lab
         }
         None => return Err(EngineError::NoSequence),
     };
+    let footage = crate::caption_follow::footage(s, clips);
     s.edit_group(label, |s| {
         let saved = s.edit_sequence("Sync Lock", |q, _, _| {
             let mut saved = Vec::new();
@@ -352,6 +357,10 @@ fn main_tracks_only<R>(s: &mut Session, clips: &[filmcraft_project::ClipId], lab
             }
             Ok(())
         })?;
+        // captions stay with the words spoken in the edited video
+        if let Some((track, before)) = &footage {
+            crate::caption_follow::follow(s, *track, before)?;
+        }
         Ok(r)
     })
 }
@@ -458,8 +467,12 @@ fn move_clip(s: &mut Session, p: &Value) -> Result<Value> {
         moves.push(json!({"clip": c.0, "track": tid.0, "time": at.0}));
         at = Tick(at.0.saturating_add(d.0));
     }
+    let footage = crate::caption_follow::footage(s, &[clip]);
     s.edit_group("Move Clip", |s| {
         s.execute("timeline.move", json!({ "moves": moves, "insert": false }))?;
+        if let Some((track, before)) = &footage {
+            crate::caption_follow::follow(s, *track, before)?;
+        }
         Ok(json!({"clip": clip.0, "index": index, "moved": true}))
     })
 }
@@ -643,6 +656,79 @@ fn smooth_status(s: &mut Session, _: &Value) -> Result<Value> {
     Ok(json!({"heavyClips": heavy.len(), "withCopies": with, "using": on, "suggest": !heavy.is_empty() && (with < heavy.len() || !on)}))
 }
 
+/// `creator.split` (M3D): cut the selected clip, or the main-track clip under the playhead, and
+/// its own sound at the playhead; music, titles and captions on other tracks are not cut.
+fn split(s: &mut Session, _: &Value) -> Result<Value> {
+    let cmd = "creator.split";
+    let (clip, _, _) = target_clip(s).ok_or_else(|| bad(cmd, "move the playhead inside the clip you want to split"))?;
+    let q = s.active_sequence().ok_or(EngineError::NoSequence)?;
+    let link = q.find_item(clip).and_then(|(_, i)| i.link);
+    let mut clips = vec![clip];
+    if let Some(l) = link {
+        clips.extend(
+            q.video_tracks.iter().chain(q.audio_tracks.iter()).flat_map(|t| t.items.iter()).filter(|i| i.link == Some(l) && i.id != clip).map(|i| i.id),
+        );
+    }
+    let keep = s.state.selection.clone();
+    s.state.selection = clips.clone();
+    let r = s.edit_group("Split", |s| s.execute("sequence.addEdit", json!({})));
+    s.state.selection = keep;
+    r?;
+    Ok(json!({"clips": clips.iter().map(|c| c.0).collect::<Vec<_>>()}))
+}
+
+/// `creator.speed {clips?, speed}` (M3D): play the selected main-track clips faster or slower
+/// (percent); the clips after them close up or make room, and captions follow the footage.
+fn speed(s: &mut Session, p: &Value) -> Result<Value> {
+    let cmd = "creator.speed";
+    let clips: Vec<filmcraft_project::ClipId> = match p.get("clips").and_then(Value::as_array) {
+        Some(a) => a.iter().filter_map(Value::as_u64).map(filmcraft_project::ClipId).collect(),
+        None => s.state.selection.clone(),
+    };
+    let speed = crate::commands::f64_p(p, "speed").ok_or_else(|| bad(cmd, "need `speed` (percent)"))?;
+    if !speed.is_finite() || !(10.0..=1000.0).contains(&speed) {
+        return Err(bad(cmd, "speed: 10 to 1000 percent"));
+    }
+    let q = s.active_sequence().ok_or(EngineError::NoSequence)?;
+    let video: Vec<filmcraft_project::ClipId> =
+        clips.iter().copied().filter(|c| q.find_item(*c).is_some_and(|(t, _)| q.track(t).is_some_and(|tr| tr.kind == TrackKind::Video))).collect();
+    if video.is_empty() {
+        return Err(bad(cmd, "select the clips to speed up or slow down"));
+    }
+    let ids: Vec<u64> = video.iter().map(|c| c.0).collect();
+    main_tracks_only(s, &video, "Speed", |s| s.execute("clip.speedDuration", json!({"clips": ids, "speed": speed, "ripple": true})))?;
+    Ok(json!({"clips": ids, "speed": speed}))
+}
+
+/// Captions from speech in one step (M3D): transcribe the video if it has no transcript yet (with
+/// the installed speech model; a clear error when there is none), make short social captions with
+/// word timings, and give them a preset look in a safe-area position. One undo step.
+fn auto_captions(s: &mut Session, p: &Value) -> Result<Value> {
+    let preset = str_p(p, "preset").unwrap_or("boldPop").to_string();
+    let position = str_p(p, "position").unwrap_or("lower").to_string();
+    s.edit_group("Auto Captions", |s| {
+        let transcribed = crate::transcript::sequence_words(s).is_empty();
+        if transcribed {
+            let mut q = json!({});
+            for k in ["model", "language"] {
+                if let Some(v) = p.get(k) {
+                    q[k] = v.clone();
+                }
+            }
+            s.execute("transcript.generate", q)?;
+        }
+        // short lines read at a glance on a phone
+        let mut q = json!({"maxChars": 24, "lines": 1, "maxSeconds": 2.5, "name": "Captions"});
+        if let Some(n) = p.get("maxChars") {
+            q["maxChars"] = n.clone();
+        }
+        let r = s.execute("transcript.createCaptions", q)?;
+        let track = r["track"].clone();
+        s.execute("captions.applyPreset", json!({"track": track, "preset": preset, "position": position}))?;
+        Ok(json!({"track": track, "captions": r["captions"], "transcribed": transcribed, "preset": preset, "position": position}))
+    })
+}
+
 /// The Creator Mode commands.
 pub(crate) fn commands() -> Vec<CommandSpec> {
     let c = |id, label, params, enabled, run| CommandSpec { id, label, menu: &[], shortcut: None, params, enabled, run, journal: true };
@@ -686,6 +772,27 @@ pub(crate) fn commands() -> Vec<CommandSpec> {
         ),
         CommandSpec { journal: false, ..c("creator.smoothEditingStatus", "Smooth Editing Status", "{}", always, smooth_status) },
         c("creator.addTitle", "Add Title", r#"{"text":str="Your title","seconds":f64=3} (at the playhead, centred, sized to the frame)"#, has_seq, add_title),
+        c(
+            "creator.split",
+            "Split",
+            "{} (the selected clip, or the main-track clip under the playhead, and its sound; music and titles are not cut)",
+            has_seq,
+            split,
+        ),
+        c(
+            "creator.speed",
+            "Clip Speed",
+            r#"{"clips":[id]? (default: the selection),"speed":percent} (ripple: the clips after follow; captions follow the footage)"#,
+            has_seq,
+            speed,
+        ),
+        c(
+            "creator.autoCaptions",
+            "Auto Captions",
+            r#"{"preset":"clean|boldPop|karaoke|wordByWord|subtle"="boldPop","position":"lower|middle|upper"="lower","model":str?,"language":str?,"maxChars":n=24} (transcribes if needed; captions with word timings, styled)"#,
+            has_seq,
+            auto_captions,
+        ),
         c("creator.transitions", "Transitions at Every Cut", r#"{"effect":str="cross_dissolve","frames":i64=10}"#, has_seq, transitions),
         CommandSpec { journal: false, ..c("creator.exportPresets", "Social Export Presets", "{}", always, export_presets) },
         c(

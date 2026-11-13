@@ -477,3 +477,36 @@ fn every_rejected_agent_operation_leaves_no_trace() {
     assert!(list.iter().all(|x| x["ok"] == false && x["revisionBefore"] == x["revisionAfter"]));
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+// M3D: Claude uses the short-form tools through the same commands, under the same rules
+#[test]
+fn claude_short_form_edits_keep_captions_in_sync_and_respect_protected_captions() {
+    let dir = tmp_dir("collab-m3d");
+    let mut s = session(&dir);
+    // captions over the second clip, styled by Claude
+    s.execute("captions.newTrack", json!({"format": "Subtitle"})).unwrap();
+    s.execute("captions.add", json!({"text": "over the second clip", "seconds": 2.5, "durationSeconds": 1.0})).unwrap();
+    as_agent(&mut s, "captions.applyPreset", json!({"preset": "boldPop"})).unwrap();
+    assert_eq!(s.history.undo.last().map(|u| u.0.as_str()), Some("Claude: Apply Caption Preset"));
+    // Claude trims the first clip: the caption over the second moves with it, in one undo step
+    let c1 = clip(&s, 0);
+    let undo_n = s.history.undo.len();
+    as_agent(&mut s, "creator.trim", json!({"clip": c1, "edge": "out", "delta": -T / 2})).unwrap();
+    assert_eq!(s.history.undo.len(), undo_n + 1);
+    let start = s.active_sequence().unwrap().caption_tracks[0].captions[0].start;
+    assert_eq!(start.0, 2 * T, "2.5 s → 2.0 s with its footage");
+    s.execute("edit.undo", json!({})).unwrap();
+    assert_eq!(s.active_sequence().unwrap().caption_tracks[0].captions[0].start.0, 5 * T / 2);
+    // protected captions: Claude's ripple would move them, so it is refused and nothing changes
+    let cap_track = s.active_sequence().unwrap().caption_tracks[0].id.0;
+    s.execute("protect.set", json!({"tracks": [cap_track]})).unwrap();
+    let before = v1(&s);
+    let e = as_agent(&mut s, "creator.trim", json!({"clip": c1, "edge": "out", "delta": -T / 2})).unwrap_err().to_string();
+    assert!(e.starts_with("PROTECTED"), "{e}");
+    assert_eq!(v1(&s), before);
+    assert_eq!(s.active_sequence().unwrap().caption_tracks[0].captions[0].start.0, 5 * T / 2);
+    // the person's own edit is not blocked
+    s.execute("creator.trim", json!({"clip": c1, "edge": "out", "delta": -T / 2})).unwrap();
+    assert_eq!(s.active_sequence().unwrap().caption_tracks[0].captions[0].start.0, 2 * T);
+    let _ = std::fs::remove_dir_all(&dir);
+}

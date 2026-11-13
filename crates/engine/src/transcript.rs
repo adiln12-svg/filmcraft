@@ -40,6 +40,20 @@ pub fn speech_available() -> bool {
     filmcraft_speech::available()
 }
 
+/// Whether captions from speech can run now (M3D): a transcriber is installed, or the chosen model
+/// (Settings ▸ Media Analysis & Transcription) is built in and downloaded. `None` when this build has
+/// no speech-to-text at all.
+pub fn speech_model_ready(s: &Session) -> Option<bool> {
+    if s.transcriber.is_some() {
+        return Some(true);
+    }
+    if !filmcraft_speech::available() {
+        return None;
+    }
+    let m = filmcraft_speech::models::find(&s.prefs.media_analysis.whisper_model)?;
+    Some(models_dir().is_some_and(|d| filmcraft_speech::models::installed(&d, m)))
+}
+
 /// The words of the active sequence's transcript.
 pub fn sequence_words(s: &Session) -> Vec<SeqWord> {
     match s.active_sequence() {
@@ -424,6 +438,22 @@ fn create_captions(s: &mut Session, p: &Value) -> Result<Value> {
         let tid = TrackId(ctx.alloc());
         let mut t = CaptionTrack::new(tid, name, format);
         t.captions = tx::blocks_to_captions(&blocks, ctx);
+        // word timings for word highlighting (M3D): each block's words, from its start
+        for (c, b) in t.captions.iter().zip(&blocks) {
+            let ws: Vec<filmcraft_project::CaptionWord> = words
+                .get(b.words.clone())
+                .unwrap_or_default()
+                .iter()
+                .map(|w| filmcraft_project::CaptionWord {
+                    text: w.text.clone(),
+                    start: (w.start - b.start).max(Tick::ZERO),
+                    duration: (w.end - w.start).max(Tick(1)),
+                })
+                .collect();
+            if !ws.is_empty() {
+                t.words.insert(c.id, ws);
+            }
+        }
         q.caption_tracks.insert(0, t);
         st.caption_selection.clear();
         Ok(tid)
@@ -447,20 +477,61 @@ fn models(_: &mut Session, _: &Value) -> Result<Value> {
 
 /// Download a catalogue model into `<data dir>/models` (feature `speech-download`). Hosts show
 /// the size, source and licence (`transcript.models`) and ask before running this.
-fn download_model(_: &mut Session, p: &Value) -> Result<Value> {
+fn download_model(s: &mut Session, p: &Value) -> Result<Value> {
     let id = str_p(p, "model").unwrap_or(filmcraft_speech::models::DEFAULT_MODEL);
     let m = filmcraft_speech::models::find(id).ok_or_else(|| speech_err(SpeechError::UnknownModel(id.into())))?;
     let dir = models_dir().ok_or_else(|| EngineError::Other("no data directory for speech models".into()))?;
     #[cfg(feature = "speech-download")]
     {
+        if bool_p(p, "background").unwrap_or(false) {
+            return download_in_background(s, m, dir);
+        }
         filmcraft_speech::models::download(&dir, m, &mut |_, _, _| true).map_err(speech_err)?;
         Ok(json!({"model": m.id, "dir": filmcraft_speech::models::model_dir(&dir, m).to_string_lossy()}))
     }
     #[cfg(not(feature = "speech-download"))]
     {
-        let _ = (m, dir);
+        let _ = (m, dir, s);
         Err(EngineError::Other("model downloads are not available in this build (built without the `speech-download` feature)".into()))
     }
+}
+
+/// `transcript.downloadModel {background: true}` (M3D): the download as a job (progress in bytes,
+/// cancellable), so the interface keeps working; Creator Mode's Auto captions offers it.
+#[cfg(feature = "speech-download")]
+fn download_in_background(s: &mut Session, m: &'static filmcraft_speech::models::ModelInfo, dir: std::path::PathBuf) -> Result<Value> {
+    use std::sync::atomic::Ordering;
+    if let Some(j) = s.jobs.iter().find(|j| j.label.ends_with(m.name) && !j.progress.finished.load(Ordering::Relaxed)) {
+        return Ok(json!({"model": m.id, "job": j.id, "running": true}));
+    }
+    let id = s.jobs.iter().map(|j| j.id).max().unwrap_or(0).saturating_add(1);
+    let job = crate::Job { id, label: format!("Download speech model {}", m.name), progress: Default::default(), result: Default::default() };
+    let (prog, res) = (job.progress.clone(), job.result.clone());
+    let run = move || {
+        let t0 = std::time::Instant::now();
+        let r = filmcraft_speech::models::download(&dir, m, &mut |done, total, _| {
+            prog.total.store(total.max(1), Ordering::Relaxed);
+            prog.done.store(done.min(total.max(1)), Ordering::Relaxed);
+            !prog.cancel.load(Ordering::Relaxed)
+        });
+        let r = r.map_err(|e| e.to_string()).map(|()| filmcraft_export::Report {
+            path: filmcraft_speech::models::model_dir(&dir, m).to_string_lossy().to_string(),
+            frames: 0,
+            seconds: t0.elapsed().as_secs_f64(),
+            bytes: 0,
+            render_fps: 0.0,
+            extra_files: Vec::new(),
+        });
+        if let Err(e) = &r {
+            *prog.error.lock().unwrap_or_else(|x| x.into_inner()) = Some(e.clone());
+        }
+        prog.finished.store(true, Ordering::Relaxed);
+        *res.lock().unwrap_or_else(|x| x.into_inner()) = Some(r);
+    };
+    let run = crate::export_tools::guard_job(job.progress.clone(), job.result.clone(), run);
+    s.jobs.push(job);
+    std::thread::Builder::new().name("filmcraft-model-download".into()).spawn(run).map_err(|e| EngineError::Other(e.to_string()))?;
+    Ok(json!({"model": m.id, "job": id}))
 }
 
 pub fn commands() -> Vec<CommandSpec> {
@@ -487,7 +558,15 @@ pub fn commands() -> Vec<CommandSpec> {
         spec("transcript.inspect", "Inspect Transcript", &[], r#"{"paragraphGapSeconds":f?}"#, always, inspect, false),
         spec("transcript.search", "Search Transcript", &[], r#"{"query":str}"#, always, search, false),
         spec("transcript.models", "List Speech Models", &[], "{}", always, models, false),
-        spec("transcript.downloadModel", "Download Speech Model", &[], r#"{"model":"whisper-base"?}"#, can_download, download_model, true),
+        spec(
+            "transcript.downloadModel",
+            "Download Speech Model",
+            &[],
+            r#"{"model":"whisper-base"?,"background":bool=false (a job; the command returns at once)}"#,
+            can_download,
+            download_model,
+            true,
+        ),
         spec("transcript.select", "Mark Selected Text", &[], r#"{"from":word,"to":word?}"#, has_transcript, select, true),
         spec("transcript.extract", "Extract Selected Text", &[], r#"{"from":word,"to":word?}"#, has_transcript, |s, p| extract_or_lift(s, p, true), true),
         spec("transcript.lift", "Lift Selected Text", &[], r#"{"from":word,"to":word?}"#, has_transcript, |s, p| extract_or_lift(s, p, false), true),

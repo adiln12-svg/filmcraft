@@ -4063,6 +4063,7 @@ fn build() -> Vec<CommandSpec> {
     v.extend(crate::palette_library::commands());
     v.extend(crate::brand_kits::commands());
     v.extend(crate::creator::commands());
+    v.extend(crate::creator_audio::commands());
     v.extend(crate::collab::commands());
     // Edit ▸ Label ▸ <colour>, Paste Attributes, subclips, Video / Audio Options, Replace With Clip…
     // and their menu order

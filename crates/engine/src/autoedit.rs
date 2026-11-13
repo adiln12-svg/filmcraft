@@ -243,7 +243,7 @@ fn analyze_beats(s: &mut Session, p: &Value) -> Result<Value> {
 }
 
 /// Beat markers on a project item's media (media time) or on the active sequence.
-fn add_markers(s: &mut Session, item: Option<ItemId>, marks: &[(Tick, bool)]) -> Result<usize> {
+pub(crate) fn add_markers(s: &mut Session, item: Option<ItemId>, marks: &[(Tick, bool)]) -> Result<usize> {
     let seq = s.state.active_sequence;
     let marks = marks.to_vec();
     s.edit("Add Beat Markers", move |pr, _| {

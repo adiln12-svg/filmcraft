@@ -70,6 +70,28 @@ pub enum CaptionAnchor {
     Bottom,
 }
 
+/// How a caption appears while it is on screen (M3D, social captions).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum CaptionAnimation {
+    /// Shown whole for its duration.
+    #[default]
+    None,
+    /// Fades in over its first fifth of a second.
+    FadeIn,
+    /// Its words appear one by one as they are spoken.
+    WordByWord,
+}
+
+/// When one word of a caption is spoken: offset from the caption's start (M3D; from the
+/// transcript when captions are made from one).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct CaptionWord {
+    pub text: String,
+    pub start: Tick,
+    pub duration: Tick,
+}
+
 /// Track-level caption style (Premiere's caption track style / Essential Graphics text settings).
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
@@ -96,6 +118,13 @@ pub struct CaptionStyle {
     /// Font style within the family (`Regular`, `Medium`, `SemiBold`, `Bold Italic`…), resolved
     /// like graphic text: the nearest weight when the family has no face of that name.
     pub font_style: String,
+    /// The word being spoken is drawn in this colour (M3D, schema v20); `None` = no highlight.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub highlight: Option<[u8; 4]>,
+    /// How captions appear (M3D, schema v20).
+    pub animation: CaptionAnimation,
+    /// Draw the text in capitals (the text itself is unchanged; M3D, schema v20).
+    pub uppercase: bool,
 }
 
 impl Default for CaptionStyle {
@@ -113,6 +142,9 @@ impl Default for CaptionStyle {
             outline: 0.0,
             outline_color: [0, 0, 0, 255],
             font_style: "SemiBold".into(),
+            highlight: None,
+            animation: CaptionAnimation::None,
+            uppercase: false,
         }
     }
 }
@@ -172,6 +204,10 @@ pub struct CaptionTrack {
     /// WebVTT header blocks (STYLE / REGION / NOTE) kept for round trips.
     #[serde(default)]
     pub vtt_blocks: Vec<String>,
+    /// Word timings of captions, by caption id (M3D, schema v20). A caption whose entry no longer
+    /// matches its text (edited since) is highlighted by estimate instead.
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub words: std::collections::BTreeMap<ClipId, Vec<CaptionWord>>,
 }
 
 fn yes() -> bool {
@@ -191,6 +227,7 @@ impl CaptionTrack {
             sync_lock: true,
             captions: Vec::new(),
             vtt_blocks: Vec::new(),
+            words: std::collections::BTreeMap::new(),
         }
     }
     pub fn end(&self) -> Tick {

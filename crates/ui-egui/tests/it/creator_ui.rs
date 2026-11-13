@@ -235,3 +235,98 @@ fn creator_offers_editing_copies_for_4k_and_reports_the_memory_plan() {
     assert!(h.state().auto.find("creator.assets.smoothEditingOff").is_some());
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// A 16-bit mono WAV of clicks at 120 bpm (music for the tests).
+fn click_track(path: &Path, seconds: f64) {
+    let sr = 44_100u32;
+    let n = (seconds * sr as f64) as usize;
+    let mut pcm = Vec::with_capacity(n * 2);
+    for i in 0..n {
+        let k = i % (sr as usize / 2);
+        let v = if k < 600 { ((k as f64 * 0.3).sin() * (1.0 - k as f64 / 600.0) * 28_000.0) as i16 } else { 0 };
+        pcm.extend_from_slice(&v.to_le_bytes());
+    }
+    let mut w = Vec::new();
+    for part in [&b"RIFF"[..], &(36 + pcm.len() as u32).to_le_bytes(), b"WAVEfmt ", &16u32.to_le_bytes(), &1u16.to_le_bytes(), &1u16.to_le_bytes()] {
+        w.extend_from_slice(part);
+    }
+    for part in [&sr.to_le_bytes()[..], &(sr * 2).to_le_bytes(), &2u16.to_le_bytes(), &16u16.to_le_bytes(), b"data", &(pcm.len() as u32).to_le_bytes(), &pcm] {
+        w.extend_from_slice(part);
+    }
+    std::fs::write(path, w).unwrap();
+}
+
+fn v1_ids(h: &Harness<'static, FilmcraftApp>) -> Vec<u64> {
+    h.state().session.active_sequence().unwrap().video_tracks[0].items.iter().map(|i| i.id.0).collect()
+}
+
+#[test]
+fn short_form_music_stays_visible_assets_drag_to_the_timeline_and_captions_get_a_look() {
+    let dir = tmp_dir("creator-m3d");
+    let paths: Vec<String> = ["a.mov", "b.mov", "c.mov"]
+        .iter()
+        .map(|n| {
+            let p = dir.join(n);
+            make_movie(&p, 24);
+            p.to_string_lossy().to_string()
+        })
+        .collect();
+    let song = dir.join("song.wav");
+    click_track(&song, 6.0);
+    let mut h = Harness::builder().with_size(egui::vec2(1500.0, 950.0)).build_eframe(|_cc| {
+        let mut app = FilmcraftApp::new(Session::default());
+        app.ui.mode = filmcraft_ui_egui::state::Mode::Import;
+        app
+    });
+    steps(&mut h, 4);
+    control(&mut h, "ui.dialog.answer", json!({ "paths": paths }));
+    click(&mut h, "start.aspect.9x16");
+    assert!(h.state().session.state.snapping, "a magnetic timeline in Creator Mode");
+    // music: Assets ▸ Music ▸ Add music…
+    click(&mut h, "creator.assets.tab.music");
+    control(&mut h, "ui.dialog.answer", json!({ "paths": [song.to_string_lossy()] }));
+    click(&mut h, "creator.assets.addMusic");
+    steps(&mut h, 3);
+    let (music, track_index) = {
+        let q = h.state().session.active_sequence().unwrap();
+        let (i, tr) = q.audio_tracks.iter().enumerate().find(|(_, t)| t.items.iter().any(|it| it.link.is_none())).expect("music placed");
+        (tr.items[0].id.0, i)
+    };
+    assert_eq!(track_index, 1, "music on A2, under the clips' sound, not on a new track below the empty ones");
+    // the music clip is on screen, inside the timeline's tracks (M3A: it could be scrolled out of sight)
+    let r = h.state().auto.find(&format!("timeline.clip.{music}")).expect("music clip drawn").rect;
+    let content = h.state().tl.layout.as_ref().unwrap().content;
+    assert!(r[3] >= 18.0, "a readable music row: {r:?}");
+    assert!(r[1] >= content.min.y && r[1] + r[3] <= content.max.y, "music visible: {r:?} in {content:?}");
+    for c in v1_ids(&h) {
+        let r = h.state().auto.find(&format!("timeline.clip.{c}")).unwrap_or_else(|| panic!("V1 clip {c} drawn")).rect;
+        assert!(r[3] >= 18.0 && r[1] >= content.min.y && r[1] + r[3] <= content.max.y, "V1 visible: {r:?}");
+    }
+    // sound tools: fade and ducking, one undo step each
+    let undo0 = h.state().session.history.undo.len();
+    click(&mut h, "creator.assets.fade");
+    click(&mut h, "creator.assets.duck");
+    assert_eq!(h.state().session.history.undo.len(), undo0 + 2, "{}", h.state().ui.status);
+    // drag a clip from Assets ▸ Media to the end of the timeline
+    click(&mut h, "creator.assets.tab.media");
+    let before = v1(&h).len();
+    // just after the last clip, on its row
+    let last = h.state().session.active_sequence().unwrap().video_tracks[0].items.iter().max_by_key(|i| i.start).unwrap().id.0;
+    let r = h.state().auto.find(&format!("timeline.clip.{last}")).unwrap().rect;
+    let content = h.state().tl.layout.as_ref().unwrap().content;
+    let to = egui::pos2((r[0] + r[2] + 30.0).min(content.max.x - 5.0), r[1] + r[3] / 2.0);
+    control(&mut h, "ui.drag", json!({"from": {"id": "creator.assets.media.0.drag"}, "to": {"x": to.x, "y": to.y}, "steps": 16}));
+    steps(&mut h, 40);
+    assert_eq!(v1(&h).len(), before + 1, "dropped on the timeline: {}", h.state().ui.status);
+    // captions: add one, then a look and a position from the Captions tab
+    click(&mut h, "creator.assets.tab.captions");
+    h.state_mut().session.execute("captions.add", json!({"text": "hello there", "seconds": 0.2, "durationSeconds": 1.0})).unwrap();
+    click(&mut h, "creator.assets.captionPreset.karaoke");
+    click(&mut h, "creator.assets.captionPosition.upper");
+    let st = h.state().session.active_sequence().unwrap().caption_tracks[0].style.clone();
+    assert!(st.highlight.is_some(), "karaoke look applied");
+    assert_eq!(st.anchor, filmcraft_engine::project::CaptionAnchor::Top);
+    assert!(h.state().auto.find("creator.assets.caption.0.text").is_some(), "the caption is listed for editing");
+    assert!(h.state().auto.find("creator.assets.exportSrt").is_some());
+    let _ = std::fs::remove_dir_all(&dir);
+}

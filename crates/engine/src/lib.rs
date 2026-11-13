@@ -14,12 +14,14 @@ pub mod aaf_omf;
 pub mod autoedit;
 pub mod autosave;
 pub mod brand_kits;
+mod caption_follow;
 pub mod captions;
 pub mod clip_ops;
 pub mod collab;
 pub mod color;
 pub mod commands;
 pub mod creator;
+mod creator_audio;
 pub mod demo;
 pub mod doc_path;
 pub mod essential_sound;
@@ -1387,6 +1389,8 @@ mod clip_ops_tests;
 mod collab_tests;
 #[cfg(test)]
 mod color_tests;
+#[cfg(test)]
+mod creator_audio_tests;
 #[cfg(test)]
 mod creator_tests;
 #[cfg(test)]

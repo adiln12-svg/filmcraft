@@ -7,7 +7,7 @@
 //! frame. Renderers composite overlays over the finished picture.
 
 use filmcraft_color::srgb_to_linear;
-use filmcraft_project::{Caption, CaptionAlign, CaptionAnchor, CaptionStyle, CaptionTrack, Sequence};
+use filmcraft_project::{Caption, CaptionAlign, CaptionAnchor, CaptionAnimation, CaptionStyle, CaptionTrack, CaptionWord, Sequence};
 use filmcraft_time::Tick;
 
 use filmcraft_text::{ParagraphStyle, TextStyle, layout, render};
@@ -122,9 +122,7 @@ pub fn layout_lines(c: &Caption, style: &CaptionStyle, w: usize, h: usize) -> Ve
     }
     let px = (style.size.clamp(4.0, MAX_CAPTION_SIZE_1080) * (h as f32 / 1080.0)).clamp(4.0, h as f32);
     let ts = caption_style(&style.font, &style.font_style, px);
-    let mut lines: Vec<String> = c.plain_lines().iter().flat_map(|l| wrap(l.trim(), &ts, w as f32 * 0.9)).collect();
-    lines.retain(|l| !l.is_empty());
-    lines
+    drawn_lines(c, style, &ts, w as f32 * 0.9)
 }
 
 /// Height of one caption line in pixels in a frame `h` pixels tall.
@@ -134,6 +132,43 @@ pub fn line_height(style: &CaptionStyle, h: usize) -> f32 {
 }
 
 pub fn render_caption(c: &Caption, style: &CaptionStyle, w: usize, h: usize) -> Option<Overlay> {
+    render_caption_at(c, style, None, None, w, h)
+}
+
+/// The caption's lines as drawn: its text (in capitals when the style says so) wrapped to the
+/// frame.
+fn drawn_lines(c: &Caption, style: &CaptionStyle, ts: &TextStyle, max_w: f32) -> Vec<String> {
+    let mut lines: Vec<String> = Vec::new();
+    for l in c.plain_lines() {
+        let l = if style.uppercase { l.to_uppercase() } else { l };
+        lines.extend(wrap(l.trim(), ts, max_w));
+    }
+    lines.retain(|l| !l.is_empty());
+    lines
+}
+
+/// Start offsets (ticks from the caption's start) of its `n` words: the stored word timings when
+/// they match the caption's words, otherwise spread over the caption in proportion to each word's
+/// length (an estimate for captions typed or edited by hand).
+fn word_starts(c: &Caption, tokens: &[&str], words: Option<&[CaptionWord]>) -> Vec<Tick> {
+    if let Some(ws) = words.filter(|ws| ws.len() == tokens.len()) {
+        return ws.iter().map(|w| w.start).collect();
+    }
+    let total: usize = tokens.iter().map(|t| t.chars().count().max(1)).sum::<usize>().max(1);
+    let mut acc = 0usize;
+    tokens
+        .iter()
+        .map(|t| {
+            let start = Tick(c.duration.0.saturating_mul(acc as i64) / total as i64);
+            acc += t.chars().count().max(1);
+            start
+        })
+        .collect()
+}
+
+/// [`render_caption`] `offset` into the caption's time, with the style's word highlight and
+/// animation (`words`: the caption's word timings, when known).
+pub fn render_caption_at(c: &Caption, style: &CaptionStyle, words: Option<&[CaptionWord]>, offset: Option<Tick>, w: usize, h: usize) -> Option<Overlay> {
     if w == 0 || h == 0 {
         return None;
     }
@@ -141,15 +176,18 @@ pub fn render_caption(c: &Caption, style: &CaptionStyle, w: usize, h: usize) -> 
     let px = (style.size.clamp(4.0, MAX_CAPTION_SIZE_1080) * scale).clamp(4.0, h as f32);
     let max_w = w as f32 * 0.9;
     let ts = caption_style(&style.font, &style.font_style, px);
-    let mut lines: Vec<String> = Vec::new();
     // (speaker names are metadata; like Premiere, they are not burned in)
-    for l in c.plain_lines() {
-        lines.extend(wrap(l.trim(), &ts, max_w));
-    }
-    lines.retain(|l| !l.is_empty());
+    let lines = drawn_lines(c, style, &ts, max_w);
     if lines.is_empty() {
         return None;
     }
+    // word by word (M3D): which word is being spoken, and whether words are drawn one at a time
+    let per_word = style.highlight.is_some() || style.animation == CaptionAnimation::WordByWord;
+    let tokens: Vec<&str> = lines.iter().flat_map(|l| l.split_whitespace()).collect();
+    let active: Option<usize> = match offset {
+        Some(t) if per_word => word_starts(c, &tokens, words).iter().rposition(|s| *s <= t),
+        _ => None,
+    };
     let vm = filmcraft_text::fonts::face(filmcraft_text::resolve(&ts.family, &ts.style).face).metrics(px);
     let (asc, desc) = (vm.ascent, vm.descent);
     let lh = px * style.line_spacing.clamp(0.8, 4.0);
@@ -195,7 +233,9 @@ pub fn render_caption(c: &Caption, style: &CaptionStyle, w: usize, h: usize) -> 
         return None;
     }
     let mut cover = vec![0.0f32; ow * oh];
+    let mut hi = vec![0.0f32; ow * oh];
     let mut bg = vec![0.0f32; ow * oh];
+    let mut token = 0usize;
     for (i, line) in lines.iter().enumerate() {
         let lt = top + lh * i as f32;
         if style.background && style.background_color[3] > 0 {
@@ -211,13 +251,48 @@ pub fn render_caption(c: &Caption, style: &CaptionStyle, w: usize, h: usize) -> 
             }
         }
         let baseline = lt + (lh - (asc + desc)) / 2.0 + asc;
-        let l = layout(line, &ts, &ParagraphStyle::default());
-        let mut m = filmcraft_text::Mask { w: ow, h: oh, a: std::mem::take(&mut cover) };
-        render::draw(&l, &render::at(xs[i], baseline.round()), &mut m, (ox, oy));
-        cover = m.a;
+        if per_word {
+            // each word at its place in the line: the spoken one in the highlight colour, words
+            // not yet spoken left out when they appear one by one
+            for (at, word) in line.match_indices(|ch: char| !ch.is_whitespace()).fold(Vec::<(usize, String)>::new(), |mut v, (i, ch)| {
+                match v.last_mut() {
+                    Some((s, wd)) if *s + wd.len() == i => wd.push_str(ch),
+                    _ => v.push((i, ch.to_string())),
+                }
+                v
+            }) {
+                let shown = style.animation != CaptionAnimation::WordByWord || active.is_some_and(|a| token <= a);
+                if shown {
+                    let x = xs[i] + filmcraft_text::measure(line.get(..at).unwrap_or(""), &ts);
+                    let l = layout(&word, &ts, &ParagraphStyle::default());
+                    let target = if style.highlight.is_some() && active == Some(token) { &mut hi } else { &mut cover };
+                    let mut m = filmcraft_text::Mask { w: ow, h: oh, a: std::mem::take(target) };
+                    render::draw(&l, &render::at(x, baseline.round()), &mut m, (ox, oy));
+                    *target = m.a;
+                }
+                token += 1;
+            }
+        } else {
+            let l = layout(line, &ts, &ParagraphStyle::default());
+            let mut m = filmcraft_text::Mask { w: ow, h: oh, a: std::mem::take(&mut cover) };
+            render::draw(&l, &render::at(xs[i], baseline.round()), &mut m, (ox, oy));
+            cover = m.a;
+        }
+    }
+    if per_word {
+        // the outline goes round every drawn word, highlighted or not
+        for (c, x) in cover.iter_mut().zip(&hi) {
+            *c = c.max(*x);
+        }
     }
     let stroke = if outline > 0.0 { dilate(&cover, ow, oh, outline) } else { Vec::new() };
     let (tc, bc, oc) = (lin(style.color), lin(style.background_color), lin(style.outline_color));
+    let hc = style.highlight.map(lin);
+    // fade in over the caption's first fifth of a second
+    let fade = match (style.animation, offset) {
+        (CaptionAnimation::FadeIn, Some(t)) => (t.seconds() / 0.2).clamp(0.0, 1.0) as f32,
+        _ => 1.0,
+    };
     let mut out = vec![0.0f32; ow * oh * 4];
     for j in 0..ow * oh {
         let mut p = [0.0f32; 4];
@@ -233,6 +308,12 @@ pub fn render_caption(c: &Caption, style: &CaptionStyle, w: usize, h: usize) -> 
             over(&mut p, oc, stroke[j]);
         }
         over(&mut p, tc, cover[j]);
+        if let Some(hc) = hc {
+            over(&mut p, hc, hi[j]);
+        }
+        if fade < 1.0 {
+            p.iter_mut().for_each(|v| *v *= fade);
+        }
         out[j * 4..j * 4 + 4].copy_from_slice(&p);
     }
     Some(Overlay { x: ox, y: oy, w: ow, h: oh, px: out })
@@ -272,7 +353,7 @@ pub fn track_overlay(track: &CaptionTrack, t: Tick, w: usize, h: usize) -> Optio
         return None;
     }
     let c = track.caption_at(t)?;
-    render_caption(c, &track.style, w, h)
+    render_caption_at(c, &track.style, track.words.get(&c.id).map(Vec::as_slice), Some(t - c.start), w, h)
 }
 
 /// Overlays of every visible caption track of a sequence at `t`, bottom track first.
@@ -576,5 +657,44 @@ mod tests {
         assert!(track_overlay(&t, Tick(5), 100, 100).is_some());
         t.enabled = false;
         assert!(track_overlay(&t, Tick(5), 100, 100).is_none());
+    }
+
+    /// M3D: the spoken word in the highlight colour, words appearing one by one, fading in; with
+    /// none of them the caption is drawn exactly as before.
+    #[test]
+    fn word_highlight_word_by_word_and_fade_in() {
+        let mut c = cap("one two three");
+        c.duration = Tick(254_016_000_000 * 3);
+        let plain = CaptionStyle { background: false, ..CaptionStyle::default() };
+        let base = render_caption(&c, &plain, 1080, 1920).unwrap();
+        let same = render_caption_at(&c, &plain, None, Some(Tick(254_016_000_000)), 1080, 1920).unwrap();
+        assert_eq!(base.px, same.px, "no highlight or animation: unchanged");
+        let reddish = |o: &Overlay| o.px.chunks(4).filter(|p| p[3] > 0.5 && p[0] > 0.5 && p[1] < 0.2).count();
+        let hl = CaptionStyle { highlight: Some([255, 0, 0, 255]), ..plain.clone() };
+        let at =
+            |t: f64, st: &CaptionStyle, words: Option<&[CaptionWord]>| render_caption_at(&c, st, words, Some(Tick::from_seconds_f64(t)), 1080, 1920).unwrap();
+        // estimated timing: "one" first, "three" last
+        let first = at(0.1, &hl, None);
+        let last = at(2.9, &hl, None);
+        assert!(reddish(&first) > 50 && reddish(&last) > 50);
+        assert_ne!(first.px, last.px, "the highlight moves");
+        // stored word timings win: "three" spoken from 0.2 s
+        let ws: Vec<CaptionWord> = ["one", "two", "three"]
+            .iter()
+            .enumerate()
+            .map(|(i, t)| CaptionWord { text: t.to_string(), start: Tick::from_seconds_f64(i as f64 * 0.1), duration: Tick::from_seconds_f64(0.1) })
+            .collect();
+        assert_eq!(at(0.25, &hl, Some(&ws)).px, last.px, "the timed third word is highlighted early");
+        // word by word: less text early than late
+        let wbw = CaptionStyle { animation: CaptionAnimation::WordByWord, ..plain.clone() };
+        let ink = |o: &Overlay| o.px.chunks(4).filter(|p| p[3] > 0.5).count();
+        assert!(ink(&at(0.1, &wbw, None)) < ink(&at(2.9, &wbw, None)));
+        // fade in: invisible at its first instant, whole after 0.2 s
+        let fade = CaptionStyle { animation: CaptionAnimation::FadeIn, ..plain.clone() };
+        assert!(at(0.0, &fade, None).px.iter().all(|v| *v == 0.0));
+        assert_eq!(at(0.5, &fade, None).px, base.px);
+        // capitals
+        let up = CaptionStyle { uppercase: true, ..plain };
+        assert_eq!(layout_lines(&c, &up, 1080, 1920), vec!["ONE TWO THREE".to_string()]);
     }
 }

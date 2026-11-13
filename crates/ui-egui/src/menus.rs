@@ -137,6 +137,8 @@ pub const UI_COMMANDS: &[UiCommand] = &[
     uic!("creator.chooseClips", "New Video…", ["File", "New"], None),
     uic!("creator.addMediaDialog", "Add Media to Video…", [], None),
     uic!("creator.replaceDialog", "Replace Clip With File…", [], None),
+    uic!("creator.importCaptionsDialog", "Import Captions (SRT)…", [], None),
+    uic!("creator.exportCaptionsDialog", "Export Captions (SRT)…", [], None),
     uic!("creator.exportDialog", "Export Video…", ["File", "Export"], None),
     uic!("creator.chooseExportFolder", "Choose Export Folder…", [], None),
     uic!("creator.exportNow", "Export Video Now", [], None),

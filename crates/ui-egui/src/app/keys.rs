@@ -156,8 +156,12 @@ impl FilmcraftApp {
                 json!({})
             };
             // Creator Mode: Delete removes the clip and closes the gap it leaves (M3A)
-            let id = if id == "edit.clear" && crate::panels::creator::is_on(self) && !self.session.state.selection.is_empty() {
+            // and Add Edit (Cmd/Ctrl+K) splits the clip and its sound, not the music (M3D)
+            let creator = crate::panels::creator::is_on(self);
+            let id = if id == "edit.clear" && creator && !self.session.state.selection.is_empty() {
                 "creator.delete".to_string()
+            } else if id == "sequence.addEdit" && creator {
+                "creator.split".to_string()
             } else {
                 id
             };
